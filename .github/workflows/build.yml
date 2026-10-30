@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "An dieses Release anhängen (z. B. v1.0.0); leer = nur bauen"
+        description: "An dieses Release anhängen (leer = Version aus tizen-manifest.xml, z. B. v1.0.0)"
         required: false
         default: ""
 
@@ -83,17 +83,20 @@ jobs:
           path: dist/*.bin
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [tv-app, esp32]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Tag muss zur Manifest-Version passen
+      - name: Release-Tag bestimmen (muss zur Manifest-Version passen)
         env:
-          TAG: ${{ inputs.release_tag || github.ref_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
         run: |
           v=$(sed -n 's/.*<manifest[^>]* version="\([^"]*\)".*/\1/p' tv-app/AmbiSync/tizen-manifest.xml)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then TAG="$GITHUB_REF_NAME"; else TAG="${INPUT_TAG:-v$v}"; fi
           [ "v$v" = "$TAG" ] || { echo "Tag $TAG passt nicht zu Version $v"; exit 1; }
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Release: $TAG"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -101,7 +104,6 @@ jobs:
       - name: Release veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           cd dist && sha256sum * > SHA256SUMS && cd ..
           # Release schon vorhanden (z. B. über die Weboberfläche angelegt)? Dann nur Dateien anhängen.
