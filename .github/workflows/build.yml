@@ -12,6 +12,11 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "An dieses Release anhängen (z. B. v1.0.0); leer = nur bauen"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -78,15 +83,17 @@ jobs:
           path: dist/*.bin
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     needs: [tv-app, esp32]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Tag muss zur Manifest-Version passen
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           v=$(sed -n 's/.*<manifest[^>]* version="\([^"]*\)".*/\1/p' tv-app/AmbiSync/tizen-manifest.xml)
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME passt nicht zu Version $v"; exit 1; }
+          [ "v$v" = "$TAG" ] || { echo "Tag $TAG passt nicht zu Version $v"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -94,7 +101,13 @@ jobs:
       - name: Release veröffentlichen
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           cd dist && sha256sum * > SHA256SUMS && cd ..
-          gh release create "$GITHUB_REF_NAME" dist/* --title "AmbiSync $GITHUB_REF_NAME" \
+          # Release schon vorhanden (z. B. über die Weboberfläche angelegt)? Dann nur Dateien anhängen.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+          gh release create "$TAG" dist/* --title "AmbiSync $TAG" \
             --notes "TV-App (.tpk, Standard-Zertifikat – vor der Installation mit dem eigenen Partner-Zertifikat neu signieren) und ESP32-Firmware (komplett = Erstinstallation ab Adresse 0x0, update = Update über die Weboberfläche)."
