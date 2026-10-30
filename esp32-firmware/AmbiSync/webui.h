@@ -24,17 +24,31 @@ button.sec{background:#2a3140}button.danger{background:var(--bad)}
 .full{grid-column:1/-1}.msg{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#222a38;padding:10px 16px;border-radius:10px;display:none}
 details summary{cursor:pointer;color:var(--mute);margin-top:10px}
 code{background:#0f1218;padding:1px 5px;border-radius:5px}
+.nets{border:1px solid var(--line);border-radius:8px;max-height:340px;overflow:auto;background:#0f1218}
+.net{display:flex;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+.net:last-child{border-bottom:0}.net:hover{background:#1a1f29}.net.sel{background:#1d2a45;box-shadow:inset 3px 0 0 var(--acc)}
+.net .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.net small{color:var(--mute);white-space:nowrap}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:15px}.bars i{width:4px;background:#3a4252;border-radius:1px}.bars i.on{background:var(--ok)}
+.pw{display:flex;gap:6px}.pw input{flex:1}.pw button{margin:0;padding:0 12px}
+.picked{margin-top:10px;padding:8px 10px;border-radius:8px;background:#1d2a45}
+.step{color:var(--text);font-weight:600;font-size:14px;margin-top:14px}
 </style></head><body>
 <header><h1>AmbiSync</h1><small id="hdr">verbinde …</small></header>
 <main>
 
 <section id="setup" class="full" style="display:none">
 <h2>Einrichtung: Heim-WLAN</h2>
-<div class="hint">Der ESP32 ist im Einrichtungsmodus. Wähle dein WLAN, danach startet er neu und ist unter <code>http://ambisync.local</code> erreichbar.</div>
-<label>WLAN</label><select id="ssidSel"><option>suche …</option></select>
-<label>oder Name von Hand</label><input id="ssidMan" placeholder="WLAN-Name">
-<label>WLAN-Passwort</label><input id="wpass" type="password">
-<label>Admin-Passwort für diese Oberfläche (min. 6 Zeichen, Pflicht)</label><input id="wadmin" type="password">
+<div class="hint">Der ESP32 ist im Einrichtungsmodus. Wähle dein WLAN, danach startet er neu und ist unter <code>http://ambisync.local</code> erreichbar. Der ESP32 kann nur <b>2,4-GHz</b>-Netze.</div>
+<label class="step">1. Dein WLAN antippen</label>
+<div id="nets" class="nets"><div class="hint" style="padding:10px">suche WLAN-Netze …</div></div>
+<button class="sec" onclick="scan(1)">Neu suchen</button>
+<div id="picked" class="picked" style="display:none">Gewählt: <b id="pickedName"></b></div>
+<details><summary>Mein WLAN steht nicht in der Liste (verstecktes Netz)</summary>
+<label>WLAN-Name von Hand</label><input id="ssidMan" placeholder="genauer WLAN-Name" oninput="manual()"></details>
+<label class="step">2. WLAN-Passwort</label>
+<div class="pw"><input id="wpass" type="password" placeholder="zuerst oben ein WLAN antippen"><button class="sec" onclick="eye('wpass',this)">zeigen</button></div>
+<label class="step">3. Admin-Passwort für diese Oberfläche (min. 6 Zeichen, Pflicht)</label>
+<div class="pw"><input id="wadmin" type="password"><button class="sec" onclick="eye('wadmin',this)">zeigen</button></div>
 <div class="hint">Benutzername beim Anmelden: <code>admin</code>. Ohne dieses Passwort könnte jeder in deinem WLAN den ESP32 umstellen.</div>
 <button onclick="saveWifi()">Verbinden</button>
 </section>
@@ -122,7 +136,7 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 <label>Farben nur von dieser IP annehmen (Fernseher-IP, leer = alle)</label><input id="allow" placeholder="z. B. 192.168.178.50">
 <button onclick="saveSys()">Speichern</button>
 <details><summary>WLAN wechseln</summary>
-<label>WLAN-Name</label><input id="ssid2"><label>Passwort</label><input id="pass2" type="password">
+<label>WLAN-Name</label><input id="ssid2" list="netsDl" placeholder="tippen oder aus der Liste wählen" onfocus="if(!NETS.length)scan(0)"><datalist id="netsDl"></datalist><label>Passwort</label><input id="pass2" type="password">
 <button class="sec" onclick="saveWifi2()">Speichern &amp; neu starten</button></details>
 <details><summary>Firmware-Update</summary>
 <input id="fw" type="file" accept=".bin"><button class="sec" onclick="upd()">Hochladen</button><div class="hint" id="updMsg"></div></details>
@@ -183,14 +197,31 @@ function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}
 function saveSys(){const d={host:$('host').value,allow:$('allow').value};if($('admin').value)d.admin=$('admin').value;
  post('/api/config',d).then(r=>{toast(r.reboot?'Gespeichert – Neustart':'Gespeichert');$('admin').value='';loadCfg()}).catch(e=>toast(e.message))}
-function saveWifi(){const s=$('ssidMan').value.trim()||$('ssidSel').value;const a=$('wadmin').value;
+function saveWifi(){const s=$('ssidMan').value.trim()||SEL;const a=$('wadmin').value;
+ if(!s){toast('Bitte zuerst oben dein WLAN antippen');return}
+ if(!$('wpass').value&&!(NETS.find(n=>n.ssid===s)||{}).open&&!confirm('Kein WLAN-Passwort eingegeben. Trotzdem verbinden?'))return;
  if(a.length<6){toast('Bitte ein Admin-Passwort mit mindestens 6 Zeichen festlegen');return}
  post('/api/config',{admin:a,ssid:s,pass:$('wpass').value}).then(()=>toast('Verbinde mit '+s+' … danach http://ambisync.local öffnen')).catch(e=>toast(e.message))}
 function saveWifi2(){post('/api/config',{ssid:$('ssid2').value,pass:$('pass2').value||'********'}).then(()=>toast('Neustart …')).catch(e=>toast(e.message))}
 function test(m){post('/api/test',{m}).then(()=>toast(m=='none'?'Test beendet':'Testbild läuft')).catch(e=>toast(e.message))}
 function upd(){const f=$('fw').files[0];if(!f)return;const fd=new FormData();fd.append('firmware',f);$('updMsg').textContent='lädt hoch …';
  fetch('/update',{method:'POST',headers:H,body:fd}).then(r=>r.text()).then(t=>$('updMsg').textContent=t).catch(()=>$('updMsg').textContent='Fehler')}
-async function scan(){try{const l=await (await fetch('/api/scan',{headers:H})).json();$('ssidSel').innerHTML=l.sort((a,b)=>b.rssi-a.rssi).map(n=>'<option>'+esc(n.ssid)+'</option>').join('')}catch(e){}}
+let NETS=[],SEL='',scanT=0;
+function bars(r){const l=r>-55?4:r>-67?3:r>-77?2:1;return '<span class="bars" title="'+r+' dBm">'+[5,8,11,15].map((h,i)=>'<i style="height:'+h+'px"'+(i<l?' class="on"':'')+'></i>').join('')+'</span>'}
+function renderNets(){const box=$('nets');$('netsDl').innerHTML=NETS.map(n=>'<option value="'+esc(n.ssid)+'">').join('');
+ if(!NETS.length){box.innerHTML='<div class="hint" style="padding:10px">Keine Netze gefunden – „Neu suchen“ drücken</div>';return}
+ box.innerHTML=NETS.map((n,i)=>'<div class="net'+(n.ssid===SEL?' sel':'')+'" data-i="'+i+'">'+bars(n.rssi)+'<span class="n">'+esc(n.ssid)+'</span><small>'+(n.open?'offen':'&#128274;')+' · Kanal '+n.ch+'</small></div>').join('');
+ box.querySelectorAll('.net').forEach(d=>d.onclick=()=>pick(NETS[+d.dataset.i]))}
+function pick(n){SEL=n.ssid;$('ssidMan').value='';$('pickedName').textContent=n.ssid+(n.open?' (offen)':'');$('picked').style.display='';renderNets();
+ const p=$('wpass');p.placeholder=n.open?'offenes Netz – kein Passwort nötig':'Passwort für „'+n.ssid+'“';if(!n.open)p.focus()}
+function manual(){const v=$('ssidMan').value.trim();if(v){SEL='';$('pickedName').textContent=v+' (von Hand)';$('picked').style.display='';renderNets()}}
+function eye(id,b){const e=$(id);const show=e.type==='password';e.type=show?'text':'password';b.textContent=show?'verbergen':'zeigen'}
+async function scan(force){clearTimeout(scanT);const box=$('nets');
+ if(force)box.innerHTML='<div class="hint" style="padding:10px">suche WLAN-Netze … (dauert ein paar Sekunden)</div>';
+ try{const r=await (await fetch('/api/scan'+(force?'?refresh=1':''),{headers:H})).json();
+  if(r.list.length||!r.running){NETS=r.list;renderNets()}
+  if(r.running)scanT=setTimeout(()=>scan(0),1500)}
+ catch(e){box.innerHTML='<div class="hint" style="padding:10px">Suche fehlgeschlagen – „Neu suchen“ drücken</div>';}}
 refresh();loadCfg().then(()=>{});setInterval(refresh,1500);
 fetch('/api/status').then(r=>r.json()).then(s=>{if(s.ap)scan()});
 </script></body></html>)HTML";
