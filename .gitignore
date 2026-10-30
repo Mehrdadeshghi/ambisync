@@ -1,0 +1,8 @@
+bin/
+obj/
+build/
+dist/
+*.tpk
+*.bin
+tv-app/AmbiSync/config.json
+tv-app/tests/fake.out

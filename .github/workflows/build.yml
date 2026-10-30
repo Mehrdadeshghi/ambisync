@@ -1,0 +1,100 @@
+name: Build
+
+# Baut bei jedem Push die TV-App (.tpk) und die ESP32-Firmware (.bin) und legt sie unter
+# "Actions -> Artifacts" ab. Ein Tag vX.Y.Z (passend zur Version in tizen-manifest.xml)
+# erzeugt zusätzlich ein GitHub-Release mit allen Dateien.
+#
+# Die .tpk ist mit dem Standard-Zertifikat des Tizen-SDK signiert. Ein Fernseher nimmt sie
+# erst an, nachdem sie mit DEINEM Partner-Zertifikat neu signiert wurde (siehe README).
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tv-app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Tests (Menü-Logik)
+        working-directory: tv-app/tests
+        run: dotnet run -p:Start=UiTests
+
+      - name: Tests (Protokoll gegen nachgebauten ESP32)
+        working-directory: tv-app/tests
+        continue-on-error: true   # braucht UDP-Broadcast auf dem Build-Rechner
+        run: |
+          python3 fake_esp.py > fake.out &
+          sleep 1
+          AMB_RES=$PWD/res dotnet run -p:Start=ProtoTest
+          cat fake.out
+
+      - name: TPK bauen
+        working-directory: tv-app/AmbiSync
+        run: |
+          [ -f config.json ] || cp config.example.json config.json
+          dotnet msbuild TizenAmbilight.csproj -restore -t:Rebuild -p:Configuration=Release -v:m
+          mkdir -p ../../dist
+          cp bin/Release/tizen90/*.tpk ../../dist/AmbiSync-default-cert.tpk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmbiSync-tv-app
+          path: dist/*.tpk
+
+  esp32:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        board: [esp32, esp32s3, esp32c3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: ESP32-Core installieren
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+      - name: Firmware bauen
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:${{ matrix.board }} --warnings default \
+            --output-dir build esp32-firmware/AmbiSync
+          mkdir -p dist
+          cp build/AmbiSync.ino.merged.bin dist/AmbiSync-${{ matrix.board }}-komplett.bin
+          cp build/AmbiSync.ino.bin dist/AmbiSync-${{ matrix.board }}-update.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmbiSync-firmware-${{ matrix.board }}
+          path: dist/*.bin
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tv-app, esp32]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag muss zur Manifest-Version passen
+        run: |
+          v=$(sed -n 's/.*<manifest[^>]* version="\([^"]*\)".*/\1/p' tv-app/AmbiSync/tizen-manifest.xml)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME passt nicht zu Version $v"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && sha256sum * > SHA256SUMS && cd ..
+          gh release create "$GITHUB_REF_NAME" dist/* --title "AmbiSync $GITHUB_REF_NAME" \
+            --notes "TV-App (.tpk, Standard-Zertifikat – vor der Installation mit dem eigenen Partner-Zertifikat neu signieren) und ESP32-Firmware (komplett = Erstinstallation ab Adresse 0x0, update = Update über die Weboberfläche)."

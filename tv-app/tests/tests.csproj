@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Prüft die TV-App auf einem normalen PC (Tizen-Teile durch TizenStubs.cs ersetzt). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <Start Condition="'$(Start)'==''">UiTests</Start>
+    <StartupObject>$(Start)</StartupObject>
+    <NoWarn>$(NoWarn);CS0649;CS0168;CS8632</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../AmbiSync/src/*.cs" />
+  </ItemGroup>
+</Project>

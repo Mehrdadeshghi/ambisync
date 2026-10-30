@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest package="de.mehrdad.AmbiSync" version="1.0.0" api-version="6.5" xmlns="http://tizen.org/ns/packages">
+    <author>Mehrdad (AmbiSync), basierend auf TizenAmbilight von Ritwick Verma</author>
+    <profile name="tv" />
+    <service-application appid="de.mehrdad.AmbiSync" exec="TizenAmbilight.dll" multiple="false" nodisplay="true" taskmanage="false" api-version="9" type="dotnet" on-boot="true" auto-restart="false">
+        <label>AmbiSync</label>
+        <icon>TizenAmbilight.png</icon>
+        <splash-screens />
+    </service-application>
+    <shortcut-list />
+    <privileges>
+        <privilege>http://tizen.org/privilege/internet</privilege>
+        <privilege>http://tizen.org/privilege/network.get</privilege>
+    </privileges>
+    <dependencies />
+    <provides-appdefined-privileges />
+</manifest>

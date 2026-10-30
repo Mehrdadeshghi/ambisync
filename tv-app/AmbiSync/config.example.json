@@ -1,0 +1,11 @@
+{
+  "_comment": "AmbiSync. Standard: den ESP32 automatisch im Netz finden (wledIp auto). Alle übrigen Einstellungen kommen live aus der Weboberfläche des ESP32. Debug-Endpunkte bleiben leer.",
+  "wledIp": "auto",
+  "ledCount": 0,
+  "mapOffset": 0,
+  "mapReverse": 0,
+  "uiOverlay": 1,
+  "uiFps": 6,
+  "controlUrl": "",
+  "probeEndpoint": ""
+}
