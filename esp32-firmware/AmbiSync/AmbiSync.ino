@@ -32,7 +32,54 @@ bool pinSafe(int p);
 int defaultPin();
 
 // ---- Protokoll im seriellen Monitor (115200 Baud): alles, was der ESP32 tut ----
-#define LOG(fmt, ...) Serial.printf("[%8.1f s] " fmt "\n", millis() / 1000.0, ##__VA_ARGS__)
+// Bei ESP32-C3/-S3 mit "USB CDC On Boot: Disabled" landet Serial auf den UART-Pins statt am USB-Kabel.
+// Dann zusätzlich über den eingebauten USB-Port ausgeben, damit der Monitor trotzdem etwas zeigt.
+#if defined(SOC_USB_SERIAL_JTAG_SUPPORTED) && SOC_USB_SERIAL_JTAG_SUPPORTED && ARDUINO_USB_MODE && !ARDUINO_USB_CDC_ON_BOOT
+#define AMB_USB_MIRROR 1
+HWCDC usbLog;
+#endif
+
+static const int LOG_LINES = 60, LOG_W = 200;
+static char logRing[LOG_LINES][LOG_W];
+static int logHead = 0;
+static uint32_t logSeq = 0;
+static portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED;
+
+void outRaw(const char *s) {
+  Serial.println(s);
+#ifdef AMB_USB_MIRROR
+  usbLog.println(s);
+#endif
+}
+void logLine(const char *s) {
+  outRaw(s);
+  portENTER_CRITICAL(&logMux);
+  strlcpy(logRing[logHead], s, LOG_W);
+  logHead = (logHead + 1) % LOG_LINES;
+  logSeq++;
+  portEXIT_CRITICAL(&logMux);
+}
+void ambLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void ambLog(const char *fmt, ...) {
+  char b[320];
+  int n = snprintf(b, sizeof(b), "[%8.1f s] ", millis() / 1000.0);
+  va_list a; va_start(a, fmt); vsnprintf(b + n, sizeof(b) - n, fmt, a); va_end(a);
+  logLine(b);
+}
+#define LOG(fmt, ...) ambLog(fmt, ##__VA_ARGS__)
+
+// letzte Protokollzeilen als Text (für die Weboberfläche)
+String logText() {
+  String o; o.reserve(LOG_LINES * 80);
+  portENTER_CRITICAL(&logMux);
+  int cnt = logSeq < (uint32_t)LOG_LINES ? (int)logSeq : LOG_LINES;
+  int start = (logHead - cnt + LOG_LINES) % LOG_LINES;
+  static char copy[LOG_LINES][LOG_W];
+  for (int i = 0; i < cnt; i++) memcpy(copy[i], logRing[(start + i) % LOG_LINES], LOG_W);
+  portEXIT_CRITICAL(&logMux);
+  for (int i = 0; i < cnt; i++) { o += copy[i]; o += '\n'; }
+  return o;
+}
 
 const char *wlStatusName(int s) {
   switch (s) {
@@ -47,7 +94,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.2"
+#define FW_VERSION "1.0.3"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -703,80 +750,70 @@ void handleTvControl() {
   server.send(200, "text/plain", body);
 }
 
-// ---- WLAN-Suche: läuft im Hintergrund, Ergebnis wird zwischengespeichert ----
+// ---- WLAN-Suche (synchron, dauert 2–5 s; Ergebnis wird zwischengespeichert) ----
 static String scanJson = "[]";
-static bool scanRunning = false;
-static uint32_t scanStartMs = 0, scanRetryAt = 0;
-static bool resumeStaAfterScan = false;
 
-void startScan() {
-  if (scanRunning) return;
-  scanRetryAt = 0;
-  if (WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA);   // im reinen AP-Modus kann der ESP32 nicht suchen
-  int r = WiFi.scanNetworks(true, false);                 // asynchron, versteckte Netze nicht
-  if (r == WIFI_SCAN_FAILED && apMode && cfg.ssid.length()) {
-    // Während der ESP32 das Heim-WLAN versucht, verweigert der Treiber die Suche -> Versuch kurz anhalten
-    LOG("WLAN-Suche: Heim-WLAN-Versuch wird für die Suche kurz angehalten");
-    WiFi.disconnect(false);
-    delay(100);
-    resumeStaAfterScan = true;
-    r = WiFi.scanNetworks(true, false);
-  }
-  scanRunning = (r == WIFI_SCAN_RUNNING || r >= 0);
-  scanStartMs = millis();
-  if (scanRunning) LOG("WLAN-Suche gestartet ...");
-  else { LOG("WLAN-Suche konnte nicht starten (%d) – neuer Versuch in 3 s", r); scanRetryAt = millis() + 3000; }
-}
-
-void resumeSta() {
-  if (!resumeStaAfterScan) return;
-  resumeStaAfterScan = false;
-  LOG("WLAN: Heim-WLAN \"%s\" wird weiter versucht", cfg.ssid.c_str());
-  WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
-}
-
-void pollScan() {
-  if (!scanRunning) {
-    if (scanRetryAt && (int32_t)(millis() - scanRetryAt) >= 0) startScan();
-    return;
-  }
-  int n = WiFi.scanComplete();
-  if (n == WIFI_SCAN_RUNNING) {
-    if (millis() - scanStartMs > 15000) { LOG("WLAN-Suche: Zeitüberschreitung nach 15 s"); WiFi.scanDelete(); scanRunning = false; resumeSta(); }
-    return;
-  }
-  scanRunning = false;
-  resumeSta();
-  if (n < 0) { LOG("WLAN-Suche fehlgeschlagen (%d) – neuer Versuch in 3 s", n); scanRetryAt = millis() + 3000; return; }
-  // doppelte Namen zusammenfassen (stärkstes Signal), nach Signal sortieren
+void buildScan(int n) {
   int idx[64]; int m = 0;
-  for (int i = 0; i < n && m < 64; i++) {
+  for (int i = 0; i < n && m < 64; i++) {           // doppelte Namen zusammenfassen (stärkstes Signal)
     String ss = WiFi.SSID(i);
     if (ss.length() == 0) continue;
     bool dup = false;
     for (int k = 0; k < m; k++) if (WiFi.SSID(idx[k]) == ss) { dup = true; if (WiFi.RSSI(i) > WiFi.RSSI(idx[k])) idx[k] = i; break; }
     if (!dup) idx[m++] = i;
   }
-  for (int a = 0; a < m; a++) for (int b = a + 1; b < m; b++) if (WiFi.RSSI(idx[b]) > WiFi.RSSI(idx[a])) { int t = idx[a]; idx[a] = idx[b]; idx[b] = t; }
+  for (int x = 0; x < m; x++) for (int y = x + 1; y < m; y++) if (WiFi.RSSI(idx[y]) > WiFi.RSSI(idx[x])) { int t = idx[x]; idx[x] = idx[y]; idx[y] = t; }
   String j = "[";
-  LOG("WLAN-Suche: %d Netze gefunden", m);
+  LOG("WLAN-Suche: %d Netze gefunden%s", m, m ? ":" : " – ist der Router an? Nur 2,4-GHz-Netze werden angezeigt");
   for (int k = 0; k < m; k++) {
     int i = idx[k];
     bool open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
     if (k) j += ",";
     j += "{\"ssid\":\"" + jsonEsc(WiFi.SSID(i)) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + ",\"ch\":" + String(WiFi.channel(i)) +
          ",\"open\":" + (open ? "true" : "false") + "}";
-    Serial.printf("             %2d. %-32s %4d dBm  Kanal %2d  %s\n", k + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i), open ? "offen" : "verschlüsselt");
+    LOG("   %2d. %-28s %4d dBm  Kanal %2d  %s", k + 1, WiFi.SSID(i).c_str(), (int)WiFi.RSSI(i), (int)WiFi.channel(i), open ? "offen" : "verschlüsselt");
   }
   j += "]";
   scanJson = j;
+}
+
+// Sucht WLANs. Läuft der Einrichtungsmodus und versucht der ESP32 parallel das Heim-WLAN,
+// wird dieser Versuch für die Suche kurz angehalten (sonst verweigert der Treiber die Suche).
+int doScan() {
+  uint32_t t0 = millis();
+  wifi_mode_t mode = WiFi.getMode();
+  LOG("WLAN-Suche startet (Modus %s) ...", mode == WIFI_AP ? "AP" : mode == WIFI_STA ? "STA" : mode == WIFI_AP_STA ? "AP+STA" : "aus");
+  if (mode == WIFI_AP || mode == WIFI_OFF) { WiFi.mode(mode == WIFI_AP ? WIFI_AP_STA : WIFI_STA); delay(100); }
+  bool paused = false;
+  if (WiFi.status() != WL_CONNECTED && cfg.ssid.length()) { WiFi.disconnect(false); delay(100); paused = true; }
   WiFi.scanDelete();
+  int n = WiFi.scanNetworks(false, false);
+  if (n < 0) {
+    LOG("WLAN-Suche: 1. Versuch fehlgeschlagen (Code %d) – zweiter Versuch", n);
+    if (WiFi.status() != WL_CONNECTED) WiFi.disconnect(false);
+    delay(300);
+    n = WiFi.scanNetworks(false, false, true, 200);   // passiv: hört nur zu, klappt auch während der Treiber beschäftigt ist
+  }
+  if (n < 0) LOG("WLAN-Suche FEHLGESCHLAGEN (Code %d) nach %u ms", n, (unsigned)(millis() - t0));
+  else { LOG("WLAN-Suche fertig nach %u ms", (unsigned)(millis() - t0)); buildScan(n); }
+  WiFi.scanDelete();
+  if (paused) { LOG("WLAN: Heim-WLAN \"%s\" wird weiter versucht", cfg.ssid.c_str()); WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str()); }
+  return n;
 }
 
 void handleScan() {
-  if (!authOk()) return;
-  if (server.arg("refresh") == "1" || (!scanRunning && scanJson == "[]")) startScan();
-  server.send(200, "application/json", String("{\"running\":") + (scanRunning ? "true" : "false") + ",\"list\":" + scanJson + "}");
+  LOG("Web: WLAN-Liste angefragt von %s%s", server.client().remoteIP().toString().c_str(), server.arg("refresh") == "1" ? " (neu suchen)" : "");
+  if (!authOk()) { LOG("Web: WLAN-Liste abgelehnt (Host \"%s\", Anmeldung/Header fehlt)", server.hostHeader().c_str()); return; }
+  int n = 0;
+  if (server.arg("refresh") == "1" || scanJson == "[]") n = doScan();
+  server.send(200, "application/json", String("{\"running\":false,\"error\":") + (n < 0 ? String(n) : "0") + ",\"list\":" + scanJson + "}");
+}
+
+void handleLog() {
+  if (!hostOk()) { server.send(403, "text/plain", ""); return; }
+  if (cfg.adminPass.length() && !apMode && !server.authenticate("admin", cfg.adminPass.c_str())) { server.requestAuthentication(BASIC_AUTH, "AmbiSync"); return; }
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/plain; charset=utf-8", logText());
 }
 
 void handleUpdateDone() {
@@ -818,6 +855,7 @@ void setupWeb() {
   server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/test", HTTP_POST, handleTest);
   server.on("/api/scan", HTTP_GET, handleScan);
+  server.on("/api/log", HTTP_GET, handleLog);
   server.on("/api/reboot", HTTP_POST, []() { if (!authOk()) return; server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); });
   server.on("/tv/control", HTTP_GET, handleTvControl);
   server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
@@ -836,7 +874,11 @@ static uint32_t apSinceMs = 0;
 void startAp() {
   apMode = true;
   apSinceMs = millis();
-  // AP + STA: der STA-Teil wird für die WLAN-Suche gebraucht (und um das Heim-WLAN weiter zu versuchen)
+  // Zuerst im reinen STA-Modus suchen (klappt immer), dann AP + STA starten
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false);
+  delay(100);
+  doScan();
   WiFi.mode(WIFI_AP_STA);
   if (cfg.ssid.length()) {
     // WLAN ist eingerichtet, aber (noch) nicht erreichbar, z. B. Router startet nach Stromausfall:
@@ -851,7 +893,6 @@ void startAp() {
   LOG("2. http://%s öffnen, Heim-WLAN aus der Liste wählen, Passwort eingeben", WiFi.softAPIP().toString().c_str());
   LOG("   oder hier im Monitor:  wifi \"WLAN-Name\" Passwort   (Befehl 'hilfe' zeigt alle Befehle)");
   if (cfg.ssid.length()) LOG("Heim-WLAN \"%s\" ist gespeichert und wird im Hintergrund weiter versucht", cfg.ssid.c_str());
-  startScan();
   testMode = TEST_FIRST;   // erste LED rot = "bitte einrichten"
   testUntilMs = 0;
 }
@@ -876,7 +917,7 @@ bool connectWifi() {
     return false;
   }
   WiFi.setAutoReconnect(true);
-  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d", WiFi.localIP().toString().c_str(), WiFi.RSSI(), WiFi.channel());
+  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel());
   LOG("Weboberfläche: http://%s  oder  http://%s.local", WiFi.localIP().toString().c_str(), cfg.hostname.c_str());
   return true;
 }
@@ -918,18 +959,20 @@ void printStatus() {
 }
 
 void printHelp() {
-  Serial.println(F("\n------------------------------ AmbiSync Befehle ------------------------------"));
-  Serial.println(F("  hilfe                       diese Übersicht"));
-  Serial.println(F("  status                      Statuszeile sofort ausgeben"));
-  Serial.println(F("  scan                        WLAN-Netze suchen und auflisten"));
-  Serial.println(F("  wifi \"Name\" Passwort        Heim-WLAN setzen und neu starten (Anführungszeichen bei Leerzeichen)"));
-  Serial.println(F("  admin Passwort              Admin-Passwort der Weboberfläche setzen (min. 6 Zeichen)"));
-  Serial.println(F("  leds Anzahl                 Anzahl LEDs (1-490)"));
-  Serial.println(F("  pin GPIO                    Daten-Pin der LEDs"));
-  Serial.println(F("  test kanten|weiss|regenbogen|erste|aus|ende"));
-  Serial.println(F("  neustart                    ESP32 neu starten"));
-  Serial.println(F("  werkreset                   ALLE Einstellungen löschen (WLAN, Passwort, LEDs)"));
-  Serial.println(F("------------------------------------------------------------------------------\n"));
+  outRaw("");
+  outRaw("------------------------------ AmbiSync Befehle ------------------------------");
+  outRaw("  hilfe                       diese Übersicht");
+  outRaw("  status                      Statuszeile sofort ausgeben");
+  outRaw("  scan                        WLAN-Netze suchen und auflisten");
+  outRaw("  wifi \"Name\" Passwort        Heim-WLAN setzen und neu starten (Anführungszeichen bei Leerzeichen)");
+  outRaw("  admin Passwort              Admin-Passwort der Weboberfläche setzen (min. 6 Zeichen)");
+  outRaw("  leds Anzahl                 Anzahl LEDs (1-490)");
+  outRaw("  pin GPIO                    Daten-Pin der LEDs");
+  outRaw("  test kanten|weiss|regenbogen|erste|aus|ende");
+  outRaw("  neustart                    ESP32 neu starten");
+  outRaw("  werkreset                   ALLE Einstellungen löschen (WLAN, Passwort, LEDs)");
+  outRaw("------------------------------------------------------------------------------");
+  outRaw("");
 }
 
 // zerlegt  wifi "Mein WLAN" geheim123   bzw.  wifi MeinWLAN geheim123
@@ -947,8 +990,13 @@ static bool parseTwo(const String &rest, String &a, String &b) {
 
 void handleSerial() {
   static String line;
-  while (Serial.available()) {
-    char c = Serial.read();
+  while (true) {
+    int ci = Serial.available() ? Serial.read() : -1;
+#ifdef AMB_USB_MIRROR
+    if (ci < 0 && usbLog.available()) ci = usbLog.read();
+#endif
+    if (ci < 0) break;
+    char c = (char)ci;
     if (c == '\r') continue;
     if (c != '\n') { if (line.length() < 200) line += c; continue; }
     String cmd = line; line = ""; cmd.trim();
@@ -959,7 +1007,7 @@ void handleSerial() {
     LOG("> %s", w == "wifi" || w == "admin" ? (w + " ...").c_str() : cmd.c_str());   // Passwörter nicht wiederholen
     if (w == "hilfe" || w == "help" || w == "?") printHelp();
     else if (w == "status") printStatus();
-    else if (w == "scan") startScan();
+    else if (w == "scan") doScan();
     else if (w == "wifi") {
       String ssid, pass;
       if (!parseTwo(rest, ssid, pass)) { LOG("Bitte so:  wifi \"WLAN-Name\" Passwort"); continue; }
@@ -1015,12 +1063,16 @@ void logEvents() {
 // ------------------------------------------------------------------ Start
 void setup() {
   Serial.begin(115200);
-  delay(400);
-  Serial.println();
-  Serial.println(F("=============================================================="));
-  Serial.println(F("  AmbiSync " FW_VERSION " – Ambilight-Empfänger für den Fernseher"));
-  Serial.println(F("  Befehle: 'hilfe' eingeben (Monitor auf 115200 Baud, Zeilenende: Neue Zeile)"));
-  Serial.println(F("=============================================================="));
+#ifdef AMB_USB_MIRROR
+  usbLog.setTxTimeoutMs(0);   // nicht blockieren, wenn kein PC angeschlossen ist
+  usbLog.begin();
+#endif
+  delay(1500);                // Zeit, damit der serielle Monitor nach dem Neustart wieder verbunden ist
+  outRaw("");
+  outRaw("==============================================================");
+  outRaw("  AmbiSync " FW_VERSION " – Ambilight-Empfänger für den Fernseher");
+  outRaw("  Befehle: 'hilfe' eingeben (Monitor auf 115200 Baud, Zeilenende: Neue Zeile)");
+  outRaw("==============================================================");
   LOG("Chip: %s Rev %d, %d Kerne, %u MHz, Flash %u MB, PSRAM %s, MAC %s", ESP.getChipModel(), ESP.getChipRevision(),
       ESP.getChipCores(), (unsigned)ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576), psramFound() ? "ja" : "nein",
       WiFi.macAddress().c_str());
@@ -1063,7 +1115,6 @@ void setup() {
 
 void loop() {
   handleSerial();
-  pollScan();
   logEvents();
   static uint32_t lastStatus = 0, lastApHint = 0;
   if (millis() - lastStatus > 10000) { lastStatus = millis(); printStatus(); }

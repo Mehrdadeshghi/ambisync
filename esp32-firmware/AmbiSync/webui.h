@@ -32,6 +32,7 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 .pw{display:flex;gap:6px}.pw input{flex:1}.pw button{margin:0;padding:0 12px}
 .picked{margin-top:10px;padding:8px 10px;border-radius:8px;background:#1d2a45}
 .step{color:var(--text);font-weight:600;font-size:14px;margin-top:14px}
+pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:8px;font:11px/1.4 ui-monospace,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
 </style></head><body>
 <header><h1>AmbiSync</h1><small id="hdr">verbinde …</small></header>
 <main>
@@ -51,6 +52,7 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 <div class="pw"><input id="wadmin" type="password"><button class="sec" onclick="eye('wadmin',this)">zeigen</button></div>
 <div class="hint">Benutzername beim Anmelden: <code>admin</code>. Ohne dieses Passwort könnte jeder in deinem WLAN den ESP32 umstellen.</div>
 <button onclick="saveWifi()">Verbinden</button>
+<details open><summary>Protokoll des ESP32 (live)</summary><pre id="log1" class="log">lädt …</pre></details>
 </section>
 
 <section>
@@ -140,6 +142,7 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 <button class="sec" onclick="saveWifi2()">Speichern &amp; neu starten</button></details>
 <details><summary>Firmware-Update</summary>
 <input id="fw" type="file" accept=".bin"><button class="sec" onclick="upd()">Hochladen</button><div class="hint" id="updMsg"></div></details>
+<details><summary>Protokoll (live)</summary><pre id="log2" class="log">–</pre></details>
 <button class="danger" onclick="post('/api/reboot').then(()=>toast('Startet neu …'))">Neustart</button>
 </section>
 
@@ -216,12 +219,19 @@ function pick(n){SEL=n.ssid;$('ssidMan').value='';$('pickedName').textContent=n.
  const p=$('wpass');p.placeholder=n.open?'offenes Netz – kein Passwort nötig':'Passwort für „'+n.ssid+'“';if(!n.open)p.focus()}
 function manual(){const v=$('ssidMan').value.trim();if(v){SEL='';$('pickedName').textContent=v+' (von Hand)';$('picked').style.display='';renderNets()}}
 function eye(id,b){const e=$(id);const show=e.type==='password';e.type=show?'text':'password';b.textContent=show?'verbergen':'zeigen'}
-async function scan(force){clearTimeout(scanT);const box=$('nets');
- if(force)box.innerHTML='<div class="hint" style="padding:10px">suche WLAN-Netze … (dauert ein paar Sekunden)</div>';
- try{const r=await (await fetch('/api/scan'+(force?'?refresh=1':''),{headers:H})).json();
-  if(r.list.length||!r.running){NETS=r.list;renderNets()}
-  if(r.running)scanT=setTimeout(()=>scan(0),1500)}
- catch(e){box.innerHTML='<div class="hint" style="padding:10px">Suche fehlgeschlagen – „Neu suchen“ drücken</div>';}}
+let scanBusy=false;
+async function scan(force){if(scanBusy)return;scanBusy=true;clearTimeout(scanT);const box=$('nets');
+ box.innerHTML='<div class="hint" style="padding:10px">suche WLAN-Netze … (dauert bis zu 5 Sekunden)</div>';
+ try{const res=await fetch('/api/scan'+(force?'?refresh=1':''),{headers:H,cache:'no-store'});
+  if(!res.ok)throw new Error('Fehler '+res.status+': '+(await res.text()||res.statusText));
+  const r=await res.json();NETS=r.list;renderNets();
+  if(r.error&&!NETS.length)box.innerHTML='<div class="hint" style="padding:10px">Suche fehlgeschlagen (Code '+r.error+') – siehe Protokoll unten, „Neu suchen“ drücken</div>'}
+ catch(e){box.innerHTML='<div class="hint" style="padding:10px">'+esc(e.message||e)+' – „Neu suchen“ drücken</div>'}
+ scanBusy=false;loadLog()}
+let logOn=false;
+async function loadLog(){try{const t=await (await fetch('/api/log',{cache:'no-store'})).text();['log1','log2'].forEach(id=>{const e=$(id);if(!e)return;const end=e.scrollTop+e.clientHeight>=e.scrollHeight-20;e.textContent=t||'(leer)';if(end)e.scrollTop=e.scrollHeight})}catch(e){}}
 refresh();loadCfg().then(()=>{});setInterval(refresh,1500);
-fetch('/api/status').then(r=>r.json()).then(s=>{if(s.ap)scan()});
+fetch('/api/status').then(r=>r.json()).then(s=>{if(s.ap){scan(0);setInterval(loadLog,2000)}}).catch(e=>{$('nets').innerHTML='<div class="hint" style="padding:10px">ESP32 antwortet nicht: '+esc(e.message)+'</div>'});
+document.querySelectorAll('details').forEach(d=>d.addEventListener('toggle',()=>{if(d.open&&d.querySelector('pre.log'))loadLog()}));
+loadLog();
 </script></body></html>)HTML";
