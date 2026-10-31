@@ -30,6 +30,7 @@
 // Vorwärtsdeklarationen (Funktionen werden vor ihrer Definition benutzt)
 bool pinSafe(int p);
 int defaultPin();
+void logTvDetails(bool force);
 
 // ---- Protokoll im seriellen Monitor (115200 Baud): alles, was der ESP32 tut ----
 // Bei ESP32-C3/-S3 mit "USB CDC On Boot: Disabled" landet Serial auf den UART-Pins statt am USB-Kabel.
@@ -94,7 +95,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.4"
+#define FW_VERSION "1.0.5"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -944,21 +945,23 @@ bool connectWifi() {
 
 // ------------------------------------------------------------------ Protokoll & Befehle
 void onWifiEvent(arduino_event_id_t ev, arduino_event_info_t info) {
-  static uint32_t lastDiscLog = 0;
+  static uint32_t lastDiscLog = 0; static int lastReason = -1;
   switch (ev) {
     case ARDUINO_EVENT_WIFI_STA_CONNECTED: LOG("WLAN: mit dem Router verbunden, warte auf IP-Adresse ..."); break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP: LOG("WLAN: IP-Adresse %s erhalten", IPAddress(info.got_ip.ip_info.ip.addr).toString().c_str()); break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
       int r = info.wifi_sta_disconnected.reason;
-      if (millis() - lastDiscLog < 3000) break;   // nicht fluten, der Treiber versucht es mehrfach pro Sekunde
-      lastDiscLog = millis();
+      if (r == lastReason && millis() - lastDiscLog < 3000) break;   // gleiche Meldung nicht fluten
+      lastDiscLog = millis(); lastReason = r;
       const char *hint = "";
       if (r == 15 || r == 204 || r == 202 || r == 2) hint = " -> Passwort falsch?";
       else if (r == 201) hint = " -> Netz nicht gefunden (Name falsch oder 5 GHz – ESP32 kann nur 2,4 GHz)";
+      else if (r == 34 || r == 200) hint = " -> Router hat nicht geantwortet (Funkstörung/Abstand) – verbinde neu";
       else if (r == 203) hint = " -> Verbindung abgelehnt (Router-Filter?)";
       LOG("WLAN: getrennt, Grund %d (%s)%s", r, WiFi.disconnectReasonName((wifi_err_reason_t)r), hint);
       break;
     }
+    case ARDUINO_EVENT_WIFI_STA_LOST_IP: LOG("WLAN: IP-Adresse verloren"); break;
     case ARDUINO_EVENT_WIFI_AP_STACONNECTED: LOG("Einrichtung: ein Gerät hat sich mit \"%s\" verbunden", AP_SSID); break;
     case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: LOG("Einrichtung: Gerät getrennt"); break;
     default: break;
@@ -1026,7 +1029,7 @@ void handleSerial() {
     String rest = sp < 0 ? "" : cmd.substring(sp + 1);
     LOG("> %s", w == "wifi" || w == "admin" ? (w + " ...").c_str() : cmd.c_str());   // Passwörter nicht wiederholen
     if (w == "hilfe" || w == "help" || w == "?") printHelp();
-    else if (w == "status") printStatus();
+    else if (w == "status") { printStatus(); logTvDetails(true); }
     else if (w == "scan") doScan();
     else if (w == "wifi") {
       String ssid, pass;
@@ -1059,6 +1062,44 @@ void handleSerial() {
   }
 }
 
+// einfacher Leser für das kleine Statuspaket des Fernsehers (nur Text/Zahl zu einem Schlüssel)
+static String jget(const char *js, const char *key, const char *from) {
+  const char *p = from ? from : js;
+  String k = String("\"") + key + "\":";
+  p = strstr(p, k.c_str());
+  if (!p) return "";
+  p += k.length();
+  String o;
+  if (*p == '"') { p++; while (*p && *p != '"') { if (*p == '\\' && p[1]) p++; o += *p++; if (o.length() > 100) break; } }
+  else { while (*p && *p != ',' && *p != '}') o += *p++; }
+  return o;
+}
+
+void logTvDetails(bool force) {
+  static char js[1401];
+  static String lastKey;
+  static uint32_t lastMs = 0;
+  if (tvStatusMs == 0) return;
+  portENTER_CRITICAL(&tvMux);
+  memcpy(js, tvStatusBuf, sizeof(js));
+  portEXIT_CRITICAL(&tvMux);
+  js[sizeof(js) - 1] = 0;
+  const char *ui = strstr(js, "\"ui\":{");
+  String power = jget(js, "power", nullptr), backend = jget(js, "backend", nullptr), st = jget(js, "status", nullptr);
+  String uRun = ui ? jget(js, "running", ui) : "", uErr = ui ? jget(js, "err", ui) : "", uMode = ui ? jget(js, "mode", ui) : "";
+  String key = power + "|" + backend + "|" + st + "|" + uRun + "|" + uErr + "|" + uMode;
+  if (!force && key == lastKey && millis() - lastMs < 30000) return;
+  lastKey = key; lastMs = millis();
+  LOG("Fernseher-App %s: Strom=%s | Bildquelle=%s | %s Bilder/s, %s Bilder gesamt | gesendet %s, Fehler %s",
+      jget(js, "ver", nullptr).c_str(), power.c_str(), backend.length() ? backend.c_str() : "-", jget(js, "fps", nullptr).c_str(),
+      jget(js, "frames", nullptr).c_str(), jget(js, "sendOk", nullptr).c_str(), jget(js, "sendFail", nullptr).c_str());
+  if (st.length()) LOG("   Meldung der App: %s", st.c_str());
+  if (ui) LOG("   Menü-Erkennung: Modus %s, läuft %s, Transparenz %s, %s Aufnahmen (%sx%s), Fehler %s, Menü-Anteil %s%s%s",
+              uMode.c_str(), uRun == "true" ? "ja" : "nein", jget(js, "alphaSeen", ui) == "true" ? "erkannt" : "nein",
+              jget(js, "frames", ui).c_str(), jget(js, "w", ui).c_str(), jget(js, "h", ui).c_str(), jget(js, "fails", ui).c_str(),
+              jget(js, "coverage", ui).c_str(), uErr.length() ? " | " : "", uErr.c_str());
+}
+
 // Ereignisse aus den UDP-Empfängern (laufen in anderen Tasks) hier sauber ins Protokoll schreiben
 void logEvents() {
   static bool rtWas = false; static uint32_t srcWas = 0, rejWas = 0, discWas = 0;
@@ -1071,7 +1112,8 @@ void logEvents() {
   rtWas = rt; srcWas = rtSourceIp;
   uint32_t tvMs = tvStatusMs;
   int tv = tvMs == 0 ? 0 : ((int32_t)(now - tvMs) < 6000 ? 1 : 2);
-  if (tv == 1 && tvWas != 1) LOG("Fernseher: AmbiSync-App meldet sich von %s", IPAddress(tvIpNum).toString().c_str());
+  if (tv == 1 && tvWas != 1) { LOG("Fernseher: AmbiSync-App meldet sich von %s", IPAddress(tvIpNum).toString().c_str()); logTvDetails(true); }
+  else if (tv == 1) logTvDetails(false);
   if (tv == 2 && tvWas == 1) LOG("Fernseher: keine Meldung mehr seit 6 s (TV aus/Standby oder App beendet)");
   tvWas = tv;
   uint32_t d = discCount;
@@ -1151,10 +1193,22 @@ void loop() {
   }
   server.handleClient();
   // WLAN weg? Nach 60 s ohne Verbindung neu starten (Einstellungen bleiben erhalten).
-  static uint32_t lostSince = 0;
+  // Zusätzlich selbst neu verbinden: Der Core verbindet nach manchen Fehlern (z. B. Grund 34) nicht zuverlässig neu.
+  static uint32_t lostSince = 0, lastKick = 0;
   if (!apMode && WiFi.status() != WL_CONNECTED) {
-    if (!lostSince) lostSince = millis();
-    if (millis() - lostSince > 60000) { LOG("WLAN seit 60 s weg – Neustart"); delay(200); ESP.restart(); }
-  } else lostSince = 0;
+    uint32_t now = millis();
+    if (!lostSince) { lostSince = now; lastKick = now; LOG("WLAN: Verbindung weg (%s)", wlStatusName(WiFi.status())); }
+    if (now - lastKick > 10000) {
+      lastKick = now;
+      LOG("WLAN: seit %u s weg – verbinde selbst neu mit \"%s\" ...", (unsigned)((now - lostSince) / 1000), cfg.ssid.c_str());
+      WiFi.disconnect(false);
+      delay(50);
+      WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+    }
+    if (now - lostSince > 120000) { LOG("WLAN seit 2 min weg – Neustart"); delay(200); ESP.restart(); }
+  } else if (lostSince) {
+    LOG("WLAN: wieder da nach %u s – IP %s, Signal %d dBm", (unsigned)((millis() - lostSince) / 1000), WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
+    lostSince = 0;
+  }
   delay(2);
 }
