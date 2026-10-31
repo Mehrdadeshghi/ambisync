@@ -32,6 +32,11 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 .pw{display:flex;gap:6px}.pw input{flex:1}.pw button{margin:0;padding:0 12px}
 .picked{margin-top:10px;padding:8px 10px;border-radius:8px;background:#1d2a45}
 .step{color:var(--text);font-weight:600;font-size:14px;margin-top:14px}
+.lv{width:100%;height:auto;display:block;border-radius:10px;background:#07080b}
+.lvinfo{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--mute);margin:8px 0 2px}.lvinfo b{color:var(--text);font-weight:500}
+.chans{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}.chan{flex:1;min-width:120px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px}
+.chan .bar{height:8px;border-radius:4px;background:#222833;margin-top:6px;overflow:hidden}.chan .bar i{display:block;height:100%;width:0}
+.swatch{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:-2px;margin-right:6px;border:1px solid #fff3}
 pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:8px;font:11px/1.4 ui-monospace,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
 </style></head><body>
 <header><h1>AmbiSync</h1><small id="hdr">verbinde …</small></header>
@@ -53,6 +58,30 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint">Benutzername beim Anmelden: <code>admin</code>. Ohne dieses Passwort könnte jeder in deinem WLAN den ESP32 umstellen.</div>
 <button onclick="saveWifi()">Verbinden</button>
 <details open><summary>Protokoll des ESP32 (live)</summary><pre id="log1" class="log">lädt …</pre></details>
+</section>
+
+<section class="full" id="liveSec">
+<h2>Live-Ansicht: was der ESP32 sieht und was die LEDs leuchten</h2>
+<svg id="lv" class="lv" viewBox="0 0 1000 600" role="img" aria-label="Fernseher mit LEDs">
+<defs>
+<filter id="fGlow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="22"/></filter>
+<filter id="fSoft" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="9"/></filter>
+<radialGradient id="gVig" cx="50%" cy="50%" r="60%"><stop offset="35%" stop-color="#000" stop-opacity=".92"/><stop offset="100%" stop-color="#000" stop-opacity="0"/></radialGradient>
+<clipPath id="cScr"><rect x="150" y="105" width="700" height="394"/></clipPath>
+</defs>
+<g id="lvGlow" opacity=".8" filter="url(#fGlow)"></g>
+<rect x="140" y="95" width="720" height="414" rx="10" fill="#050608" stroke="#2b303b" stroke-width="3"/>
+<g clip-path="url(#cScr)"><rect x="150" y="105" width="700" height="394" fill="#000"/><g id="lvScr" filter="url(#fSoft)"></g>
+<rect x="150" y="105" width="700" height="394" fill="url(#gVig)"/></g>
+<text x="500" y="292" text-anchor="middle" fill="#8b93a3" font-size="17">Fernseher-Bild (Ränder)</text>
+<text id="lvMid" x="500" y="318" text-anchor="middle" fill="#5d6575" font-size="14"></text>
+<rect x="470" y="509" width="60" height="10" fill="#1a1d24"/><rect x="420" y="519" width="160" height="8" rx="3" fill="#1a1d24"/>
+<g id="lvStrip"></g>
+<g id="lvMarks" font-size="13" font-weight="600" text-anchor="middle"></g>
+</svg>
+<div class="lvinfo" id="lvInfo">lädt …</div>
+<div id="lvRgb" style="display:none"><div class="chans" id="lvChans"></div></div>
+<div class="hint">Innen: die Farben an den Bildrändern, wie sie vom Fernseher beim ESP32 ankommen. Außen: was der LED-Streifen gerade wirklich leuchtet (mit Helligkeit und Strombegrenzung). <b>1</b> und <b>2</b> markieren die ersten beiden LEDs, also Anfang und Laufrichtung.</div>
 </section>
 
 <section>
@@ -100,7 +129,9 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div id="rgbBox" style="display:none">
 <div class="row" style="grid-template-columns:1fr 1fr 1fr"><div><label>Rot an GPIO</label><input id="pinR" type="number" min="0" max="48"></div>
 <div><label>Grün an GPIO</label><input id="pinG" type="number" min="0" max="48"></div><div><label>Blau an GPIO</label><input id="pinB" type="number" min="0" max="48"></div></div>
-<div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung der Farbe. Der Streifen zeigt die Durchschnittsfarbe des Bildes.</div></div>
+<label>Weiß an GPIO (nur RGBW/RGBWW-Streifen, -1 = keiner)</label><input id="pinW" type="number" min="-1" max="48">
+<label>Welche Farbe der Streifen zeigt</label><select id="rgbMode"><option value="0">vorherrschende Farbe des Bildes (empfohlen)</option><option value="1">Durchschnitt aller Ränder</option></select>
+<div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung seiner Farbe, der Plus-Anschluss des Streifens bleibt am Netzteil. Der Streifen zeigt die Durchschnittsfarbe des Bildes.</div></div>
 <div class="row"><div id="pinBox"><label>Daten-Pin (GPIO)</label><input id="pin" type="number" min="0" max="48"></div>
 <div><label>Anzahl LEDs / Zonen</label><input id="leds" type="number" min="1" max="490"></div></div>
 <div id="orderBox"><label>Farbreihenfolge</label><select id="order"><option value="0">GRB (WS2812B, üblich)</option><option value="1">RGB</option><option value="2">BRG</option><option value="3">RBG</option><option value="4">GBR</option><option value="5">BGR</option></select></div>
@@ -191,7 +222,7 @@ async function refresh(){
 async function loadCfg(){
  const r=await fetch('/api/config',{headers:H});if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
+ ['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
@@ -200,7 +231,7 @@ async function loadCfg(){
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
 }
 function typeUi(){const a=$('type').value==='1';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
-function saveLed(){const d={};['type','pinR','pinG','pinB','pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}
@@ -236,6 +267,51 @@ async function scan(force){if(scanBusy)return;scanBusy=true;clearTimeout(scanT);
  scanBusy=false;loadLog()}
 let logOn=false;
 async function loadLog(){try{const t=await (await fetch('/api/log',{cache:'no-store'})).text();['log1','log2'].forEach(id=>{const e=$(id);if(!e)return;const end=e.scrollTop+e.clientHeight>=e.scrollHeight-20;e.textContent=t||'(leer)';if(end)e.scrollTop=e.scrollHeight})}catch(e){}}
+// ---- Live-Ansicht ----
+const NS='http://www.w3.org/2000/svg',TV={x:150,y:105,w:700,h:394};let LV={sig:'',dots:[],bands:[],glows:[],ring:null,ringGlow:null};
+function svgEl(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e}
+function layout(Z){const W=16,Hh=9,P=2*W+2*Hh;let l=Math.max(1,Math.round(Z*Hh/P)),t=Math.max(1,Math.round(Z*W/P)),r=l,b=t;
+ const c=[l,t,r,b];let s=l+t+r+b;while(s<Z){c[3]++;s++}while(s>Z&&c[3]>1){c[3]--;s--}
+ while(s>Z){let g=0;for(let i=1;i<4;i++)if(c[i]>c[g])g=i;if(c[g]<=1)break;c[g]--;s--}
+ const [L,T,R,B]=c,z=[],o=34,bw=TV.w*.13,bh=TV.h*.16;
+ for(let i=0;i<T;i++){const x0=TV.x+TV.w*i/T,x1=TV.x+TV.w*(i+1)/T;z.push({px:(x0+x1)/2,py:TV.y-o,band:[x0,TV.y,x1-x0,bh],gx:(x0+x1)/2,gy:TV.y-o-25})}
+ for(let i=0;i<R;i++){const y0=TV.y+TV.h*i/R,y1=TV.y+TV.h*(i+1)/R;z.push({px:TV.x+TV.w+o,py:(y0+y1)/2,band:[TV.x+TV.w-bw,y0,bw,y1-y0],gx:TV.x+TV.w+o+25,gy:(y0+y1)/2})}
+ for(let i=0;i<B;i++){const x1=TV.x+TV.w-TV.w*i/B,x0=TV.x+TV.w-TV.w*(i+1)/B;z.push({px:(x0+x1)/2,py:TV.y+TV.h+o,band:[x0,TV.y+TV.h-bh,x1-x0,bh],gx:(x0+x1)/2,gy:TV.y+TV.h+o+25})}
+ for(let i=0;i<L;i++){const y1=TV.y+TV.h-TV.h*i/L,y0=TV.y+TV.h-TV.h*(i+1)/L;z.push({px:TV.x-o,py:(y0+y1)/2,band:[TV.x,y0,bw,y1-y0],gx:TV.x-o-25,gy:(y0+y1)/2})}
+ return z}
+function hx(s,i){return '#'+s.substr(i*6,6)}
+function lvBuild(d){const Z=Math.max(1,d.zones),z=layout(Z),n=d.n;const g=$('lvGlow'),st=$('lvStrip'),sc=$('lvScr'),mk=$('lvMarks');
+ [g,st,sc,mk].forEach(e=>e.innerHTML='');LV={sig:'',dots:[],bands:[],glows:[],ring:null,ringGlow:null,map:[]};
+ for(let k=0;k<Z;k++){const b=z[k].band;LV.bands.push(svgEl('rect',{x:b[0],y:b[1],width:b[2]+1,height:b[3]+1,fill:'#000'},sc))}
+ for(let led=0;led<n;led++){if(led>=Z){LV.map.push(-1);continue}let k=((d.rev?-led:led)+d.map)%Z;if(k<0)k+=Z;LV.map.push(k)}
+ if(d.type==1){
+  LV.ringGlow=svgEl('rect',{x:TV.x-60,y:TV.y-60,width:TV.w+120,height:TV.h+120,rx:40,fill:'none','stroke-width':70,stroke:'#000',filter:'url(#fGlow)'},g);
+  LV.ring=svgEl('rect',{x:TV.x-34,y:TV.y-34,width:TV.w+68,height:TV.h+68,rx:18,fill:'none','stroke-width':10,stroke:'#000'},st);
+  svgEl('rect',{x:TV.x-34,y:TV.y-34,width:TV.w+68,height:TV.h+68,rx:18,fill:'none','stroke-width':1,stroke:'#ffffff22'},st);
+ } else {
+  const per=2*(TV.w+TV.h)+8*34,rad=Math.max(2.5,Math.min(11,per/Math.max(1,Math.min(n,Z))*.36));
+  for(let led=0;led<n;led++){const k=LV.map[led];if(k<0){LV.dots.push(null);LV.glows.push(null);continue}const p=z[k];
+   LV.glows.push(svgEl('circle',{cx:p.gx,cy:p.gy,r:Math.max(28,rad*4),fill:'#000'},g));
+   const c=svgEl('circle',{cx:p.px,cy:p.py,r:rad,fill:'#000',stroke:led==0?'#fff':'#ffffff18','stroke-width':led==0?2.5:1},st);
+   svgEl('title',{},c).textContent='LED '+(led+1)+' (Zone '+(k+1)+')';LV.dots.push(c)}
+ }
+ if(d.type!=1)for(let led=0;led<Math.min(2,n);led++){const k=LV.map[led];if(k<0)continue;const p=z[k];const dx=p.px<TV.x?-24:p.px>TV.x+TV.w?24:0,dy=p.py<TV.y?-22:p.py>TV.y+TV.h?26:5;
+  svgEl('text',{x:p.px+dx,y:p.py+dy,fill:led?'#9fb6ff':'#fff'},mk).textContent=String(led+1)}
+ LV.sig=[n,Z,d.map,d.rev,d.type].join('|')}
+function pct(v){return Math.round(v*100/4095)}
+function lvDraw(d){const sig=[d.n,Math.max(1,d.zones),d.map,d.rev,d.type].join('|');if(sig!==LV.sig)lvBuild(d);
+ const n=d.n;for(let led=0;led<n;led++){const k=LV.map[led];if(k<0)continue;LV.bands[k].setAttribute('fill',hx(d.in,led));
+  if(LV.dots[led]){const c=hx(d.out,led);LV.dots[led].setAttribute('fill',c);LV.glows[led].setAttribute('fill',c)}}
+ if(d.type==1){const c='rgb('+d.avg.join(',')+')';LV.ring.setAttribute('stroke',c);LV.ringGlow.setAttribute('stroke',c);
+  const ch=[['Rot','#ff4d4d',d.pwm[0],d.pins[0]],['Grün','#3fdc6a',d.pwm[1],d.pins[1]],['Blau','#4d7dff',d.pwm[2],d.pins[2]]];if(d.pwm[3]>=0)ch.push(['Weiß','#f2f2f2',d.pwm[3],d.pins[3]]);
+  $('lvChans').innerHTML='<div class="chan"><span class="swatch" style="background:'+c+'"></span>Streifen-Farbe<br><b>'+d.avg.join(', ')+'</b></div>'+ch.map(x=>'<div class="chan">'+x[0]+' · GPIO '+x[3]+'<br><b>'+pct(x[2])+' %</b> PWM<div class="bar"><i style="width:'+pct(x[2])+'%;background:'+x[1]+'"></i></div></div>').join('');
+  $('lvRgb').style.display=''} else $('lvRgb').style.display='none';
+ $('lvMid').textContent=d.test?'Testbild läuft':d.rt?'':'keine Farben vom Fernseher – Leerlauf';
+ $('lvInfo').innerHTML=(d.test?'<span><b>Testbild</b></span>':d.rt?'<span>Quelle <b>'+esc(d.src)+'</b> · <b>'+d.fps+'</b> Bilder/s vom TV</span>':'<span><b>kein Signal</b> vom Fernseher</span>')+
+  '<span><b>'+d.outFps+'</b> Bilder/s an die LEDs</span><span>'+(d.type==1?'RGB-Streifen, eine Farbe':d.n+' LEDs an GPIO '+d.pin)+'</span><span>Helligkeit <b>'+Math.round(d.bri/2.55)+' %</b></span>'+
+  (d.type==1?'':'<span>Strom ~<b>'+(d.mA/1000).toFixed(2)+' A</b>'+(d.lim?' (begrenzt)':'')+'</span>')+(d.zones!=d.n?'<span style="color:var(--warn)">TV-Zonen '+d.zones+' ≠ LEDs '+d.n+'</span>':'')}
+let lvT=0;async function lvTick(){clearTimeout(lvT);if(document.visibilityState==='visible'){try{const r=await fetch('/api/leds',{cache:'no-store'});if(r.ok)lvDraw(await r.json())}catch(e){}}lvT=setTimeout(lvTick,150)}
+lvTick();
 refresh();loadCfg().then(()=>{});setInterval(refresh,1500);
 fetch('/api/status').then(r=>r.json()).then(s=>{if(s.ap){scan(0);setInterval(loadLog,2000)}}).catch(e=>{$('nets').innerHTML='<div class="hint" style="padding:10px">ESP32 antwortet nicht: '+esc(e.message)+'</div>'});
 document.querySelectorAll('details').forEach(d=>d.addEventListener('toggle',()=>{if(d.open&&d.querySelector('pre.log'))loadLog()}));

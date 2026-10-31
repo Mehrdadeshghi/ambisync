@@ -32,6 +32,7 @@ bool pinSafe(int p);
 int defaultPin();
 void defaultRgbPins();
 void logTvDetails(bool force);
+static String jget(const char *js, const char *key, const char *from);
 
 // ---- Protokoll im seriellen Monitor (115200 Baud): alles, was der ESP32 tut ----
 // Bei ESP32-C3/-S3 mit "USB CDC On Boot: Disabled" landet Serial auf den UART-Pins statt am USB-Kabel.
@@ -96,7 +97,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.6"
+#define FW_VERSION "1.0.7"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -128,6 +129,8 @@ struct Settings {
   int ledPin = 16;
   int stripType = 0;          // 0 = WS2812B (jede LED einzeln), 1 = normaler RGB-Streifen (R, G, B, +) über 3 MOSFETs
   int pinR = 25, pinG = 26, pinB = 27;
+  int pinW = -1;
+  int rgbMode = 0;            // RGB-Streifen: 0 = vorherrschende Farbe, 1 = Durchschnitt aller Zonen              // optional: Weiß-Kanal (RGBW/RGBWW-Streifen), -1 = keiner
   int ledCount = 60;
   int colorOrder = 0;         // 0 GRB, 1 RGB, 2 BRG, 3 RBG, 4 GBR, 5 BGR
   int brightness = 255;       // 0..255
@@ -160,6 +163,9 @@ void loadSettings() {
   cfg.stripType = constrain(prefs.getInt("type", STRIP_TYPE_DEFAULT), 0, 1);
   cfg.pinR = prefs.getInt("pinR", -1); cfg.pinG = prefs.getInt("pinG", -1); cfg.pinB = prefs.getInt("pinB", -1);
   if (!pinSafe(cfg.pinR) || !pinSafe(cfg.pinG) || !pinSafe(cfg.pinB)) defaultRgbPins();
+  cfg.pinW = prefs.getInt("pinW", -1);
+  cfg.rgbMode = constrain(prefs.getInt("rgbMode", 0), 0, 1);
+  if (cfg.pinW >= 0 && (!pinSafe(cfg.pinW) || cfg.pinW == cfg.pinR || cfg.pinW == cfg.pinG || cfg.pinW == cfg.pinB)) cfg.pinW = -1;
   cfg.ledCount = constrain(prefs.getInt("leds", 60), 1, MAX_LEDS);
   cfg.colorOrder = constrain(prefs.getInt("order", 0), 0, 5);
   cfg.brightness = constrain(prefs.getInt("bri", 255), 0, 255);
@@ -184,7 +190,7 @@ void saveSettings() {
   prefs.putInt("pin", cfg.ledPin);
   prefs.putInt("leds", cfg.ledCount);
   prefs.putInt("type", cfg.stripType);
-  prefs.putInt("pinR", cfg.pinR); prefs.putInt("pinG", cfg.pinG); prefs.putInt("pinB", cfg.pinB);
+  prefs.putInt("pinR", cfg.pinR); prefs.putInt("pinG", cfg.pinG); prefs.putInt("pinB", cfg.pinB); prefs.putInt("pinW", cfg.pinW); prefs.putInt("rgbMode", cfg.rgbMode);
   prefs.putInt("order", cfg.colorOrder);
   prefs.putInt("bri", cfg.brightness);
   prefs.putInt("maxmA", cfg.maxCurrent);
@@ -270,12 +276,13 @@ static volatile bool ledReinit = true;
 
 // normaler RGB-Streifen: drei PWM-Ausgänge (über MOSFETs), ganzer Streifen eine Farbe
 static bool analogOn = false;
-static int aPin[3] = {-1, -1, -1};
-static uint8_t analogRgb[3] = {0, 0, 0};
+static int aPin[4] = {-1, -1, -1, -1};            // R, G, B, (W)
+static uint8_t analogRgb[3] = {0, 0, 0};          // Durchschnittsfarbe (vor dem Aufteilen in Weiß)
+static uint16_t analogPwm[4] = {0, 0, 0, 0};      // tatsächliche PWM-Werte 0..4095
 static const int PWM_BITS = 12, PWM_FREQ = 5000;
 
 void analogOff() {
-  for (int c = 0; c < 3; c++) if (aPin[c] >= 0) { ledcWrite(aPin[c], 0); ledcDetach(aPin[c]); pinMode(aPin[c], OUTPUT); digitalWrite(aPin[c], LOW); aPin[c] = -1; }
+  for (int c = 0; c < 4; c++) if (aPin[c] >= 0) { ledcWrite(aPin[c], 0); ledcDetach(aPin[c]); pinMode(aPin[c], OUTPUT); digitalWrite(aPin[c], LOW); aPin[c] = -1; }
   analogOn = false;
 }
 
@@ -285,8 +292,9 @@ bool ledInit() {
   if (rmtBuf) { free(rmtBuf); rmtBuf = nullptr; }
   rmtLeds = cfg.ledCount;
   if (cfg.stripType == 1) {
-    int pins[3] = {cfg.pinR, cfg.pinG, cfg.pinB};
-    for (int c = 0; c < 3; c++) {
+    int pins[4] = {cfg.pinR, cfg.pinG, cfg.pinB, cfg.pinW};
+    for (int c = 0; c < 4; c++) {
+      if (pins[c] < 0) continue;
       if (!ledcAttach(pins[c], PWM_FREQ, PWM_BITS)) { LOG("LED: FEHLER – PWM auf GPIO %d lässt sich nicht starten", pins[c]); analogOff(); return false; }
       ledcWrite(pins[c], 0);
       aPin[c] = pins[c];
@@ -294,6 +302,7 @@ bool ledInit() {
     analogOn = true;
     LOG("LED: normaler RGB-Streifen – Rot an GPIO %d, Grün an GPIO %d, Blau an GPIO %d (PWM %d Hz), Helligkeit %d%%",
         aPin[0], aPin[1], aPin[2], PWM_FREQ, cfg.brightness * 100 / 255);
+    if (aPin[3] >= 0) LOG("     Weiß-Kanal an GPIO %d (Weißanteil der Farbe geht auf die weißen LEDs)", aPin[3]);
     LOG("     Der ganze Streifen zeigt die Durchschnittsfarbe des Bildes (%d Zonen)", rmtLeds);
     return true;
   }
@@ -324,19 +333,67 @@ static const uint8_t ORDER[6][3] = {
 
 void ledShow(const uint8_t *rgb) {
   if (analogOn) {
-    // Durchschnitt aller Zonen; hellere/kräftigere Zonen zählen etwas mehr, damit es nicht grau wird
-    float acc[3] = {0, 0, 0}, wsum = 0;
-    for (int i = 0; i < rmtLeds; i++) {
+    // Ein Streifen, eine Farbe. Reiner Durchschnitt macht bunte Bilder grau, daher (Standard) die
+    // vorherrschende Farbe: Zonen nach Farbton in 12 Gruppen, stärkste Gruppe gewinnt (mit Hysterese),
+    // deren Farbe wird mit der mittleren Helligkeit des ganzen Bildes ausgegeben.
+    static int lastBin = -1;
+    static float sm[3] = {0, 0, 0};
+    float acc[3] = {0, 0, 0}, wsum = 0, bins[12] = {0}, vsum = 0, vmax = 0;
+    int n = min(rmtLeds, MAX_LEDS);
+    for (int i = 0; i < n; i++) {
       int r = rgb[i * 3], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
       int mx = max(r, max(g, b)), mn = min(r, min(g, b));
       float w = 1.0f + (mx - mn) / 64.0f + mx / 128.0f;
       acc[0] += r * w; acc[1] += g * w; acc[2] += b * w; wsum += w;
+      vsum += mx; if (mx > vmax) vmax = mx;
+      if (mx > 8 && mx - mn > 12) {
+        float d = mx - mn, h;
+        if (mx == r) h = fmodf((g - b) / d + 6.0f, 6.0f); else if (mx == g) h = (b - r) / d + 2.0f; else h = (r - g) / d + 4.0f;
+        bins[(int)(h * 2.0f) % 12] += (d / 255.0f) * (mx / 255.0f);
+      }
     }
-    for (int c = 0; c < 3; c++) {
-      float v = wsum > 0 ? acc[c] / wsum : 0;           // 0..255
-      analogRgb[c] = (uint8_t)(v + 0.5f);
-      float lin = powf(v / 255.0f, 2.2f);               // Gamma: dunkle Töne sauber auflösen
-      ledcWrite(aPin[c], (uint32_t)(lin * ((1 << PWM_BITS) - 1) + 0.5f));
+    float col[3];
+    for (int c = 0; c < 3; c++) col[c] = wsum > 0 ? acc[c] / wsum : 0;
+    float satTotal = 0; for (int k = 0; k < 12; k++) satTotal += bins[k];
+    if (cfg.rgbMode == 0 && n > 0 && satTotal > 0.02f * n) {
+      float sb[12];
+      for (int k = 0; k < 12; k++) sb[k] = bins[k] + 0.5f * (bins[(k + 11) % 12] + bins[(k + 1) % 12]);
+      int best = 0; for (int k = 1; k < 12; k++) if (sb[k] > sb[best]) best = k;
+      if (lastBin >= 0 && sb[lastBin] * 1.3f >= sb[best]) best = lastBin;   // nicht zwischen zwei ähnlichen Farben springen
+      lastBin = best;
+      float a2[3] = {0, 0, 0}, w2 = 0;
+      for (int i = 0; i < n; i++) {
+        int r = rgb[i * 3], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
+        int mx = max(r, max(g, b)), mn = min(r, min(g, b));
+        if (mx <= 8 || mx - mn <= 12) continue;
+        float d = mx - mn, h;
+        if (mx == r) h = fmodf((g - b) / d + 6.0f, 6.0f); else if (mx == g) h = (b - r) / d + 2.0f; else h = (r - g) / d + 4.0f;
+        int k = (int)(h * 2.0f) % 12;
+        int dist = abs(k - best); if (dist > 6) dist = 12 - dist;
+        if (dist > 1) continue;
+        float w = (d / 255.0f) * (mx / 255.0f);
+        a2[0] += r * w; a2[1] += g * w; a2[2] += b * w; w2 += w;
+      }
+      if (w2 > 0) {
+        float m = max(a2[0], max(a2[1], a2[2])) / w2;
+        float target = (vsum / n) * 0.6f + vmax * 0.4f;   // Helligkeit: Mittel des Bildes, Spitzen zählen mit
+        float k = m > 0 ? target / m : 0;
+        for (int c = 0; c < 3; c++) col[c] = min(255.0f, a2[c] / w2 * k);
+      }
+    } else lastBin = -1;
+    for (int c = 0; c < 3; c++) { sm[c] += (col[c] - sm[c]) * 0.2f; if (sm[c] < 0.05f) sm[c] = 0; }   // ~80 ms nachführen
+    float v[4];
+    for (int c = 0; c < 3; c++) { v[c] = sm[c]; analogRgb[c] = (uint8_t)(v[c] + 0.5f); }   // 0..255
+    v[3] = 0;
+    if (aPin[3] >= 0) {                                   // RGBW: gemeinsamen Weißanteil auf die weißen LEDs legen
+      float w = min(v[0], min(v[1], v[2]));
+      for (int c = 0; c < 3; c++) v[c] -= w;
+      v[3] = w;
+    }
+    for (int c = 0; c < 4; c++) {
+      float lin = powf(v[c] / 255.0f, 2.2f);             // Gamma: dunkle Töne sauber auflösen
+      analogPwm[c] = (uint16_t)(lin * ((1 << PWM_BITS) - 1) + 0.5f);
+      if (aPin[c] >= 0) ledcWrite(aPin[c], analogPwm[c]);
     }
     return;
   }
@@ -503,6 +560,7 @@ void onDiscovery(AsyncUDPPacket &pkt) {
 
 // ------------------------------------------------------------------ Render-Task (Kern 1)
 static uint8_t frame[MAX_LEDS * 3];
+static uint8_t viewWant[MAX_LEDS * 3];   // was der ESP32 gerade anzeigen will (vom TV/Test), für die Live-Ansicht
 
 void renderTask(void *) {
   const uint32_t periodMs = 16;  // ~60 Bilder/s
@@ -564,6 +622,8 @@ void renderTask(void *) {
         portEXIT_CRITICAL(&frameMux);
       }
     }
+
+    memcpy(viewWant, want, n * 3);
 
     // ---- weich nachführen (Zwischenbilder zwischen den ~25 TV-Bildern/s) ----
     float k = (tm != TEST_NONE) ? 1.0f : (1.0f - cfg.smoothing / 100.0f);
@@ -731,7 +791,7 @@ void handleGetConfig() {
   j += "\"pin\":" + String(cfg.ledPin) + ",";
   j += "\"leds\":" + String(cfg.ledCount) + ",";
   j += "\"type\":" + String(cfg.stripType) + ",";
-  j += "\"pinR\":" + String(cfg.pinR) + ",\"pinG\":" + String(cfg.pinG) + ",\"pinB\":" + String(cfg.pinB) + ",";
+  j += "\"pinR\":" + String(cfg.pinR) + ",\"pinG\":" + String(cfg.pinG) + ",\"pinB\":" + String(cfg.pinB) + ",\"pinW\":" + String(cfg.pinW) + ",\"rgbMode\":" + String(cfg.rgbMode) + ",";
   j += "\"order\":" + String(cfg.colorOrder) + ",";
   j += "\"bri\":" + String(cfg.brightness) + ",";
   j += "\"maxmA\":" + String(cfg.maxCurrent) + ",";
@@ -763,6 +823,14 @@ void handleSetConfig() {
   if (server.hasArg("type") && server.arg("type").length()) {
     int t = argInt("type", cfg.stripType, 0, 1);
     int r = argInt("pinR", cfg.pinR, 0, 48), g = argInt("pinG", cfg.pinG, 0, 48), b = argInt("pinB", cfg.pinB, 0, 48);
+    int wp = argInt("pinW", cfg.pinW, -1, 48);
+    if (t == 1 && wp >= 0 && (!pinSafe(wp) || wp == r || wp == g || wp == b)) {
+      LOG("Web: NICHT gespeichert – Weiß-Pin %d ungültig oder doppelt", wp);
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"Weiß-Pin ungültig oder doppelt (-1 = keiner)\"}"); return;
+    }
+    if (wp != cfg.pinW) reLed = true;
+    cfg.pinW = wp;
+    cfg.rgbMode = argInt("rgbMode", cfg.rgbMode, 0, 1);
     if (t == 1 && (!pinSafe(r) || !pinSafe(g) || !pinSafe(b) || r == g || r == b || g == b)) {
       LOG("Web: NICHT gespeichert – RGB-Pins ungültig oder doppelt (%d/%d/%d)", r, g, b);
       server.send(400, "application/json", "{\"ok\":false,\"error\":\"RGB-Pins ungültig oder doppelt\"}"); return;
@@ -891,6 +959,51 @@ void handleScan() {
   server.send(200, "application/json", String("{\"running\":false,\"error\":") + (n < 0 ? String(n) : "0") + ",\"list\":" + scanJson + "}");
 }
 
+// Live-Ansicht: was vom Fernseher ankommt ("in") und was an die LEDs geht ("out")
+static void hexAppend(String &o, const uint8_t *d, int len) {
+  static const char HX[] = "0123456789abcdef";
+  for (int i = 0; i < len; i++) { o += HX[d[i] >> 4]; o += HX[d[i] & 15]; }
+}
+static int tokenInt(const String &tokens, const char *key, int def) {
+  String t = "," + tokens + ",";
+  String k = String(",") + key + "=";
+  int p = t.indexOf(k);
+  if (p < 0) return def;
+  return t.substring(p + k.length()).toInt();
+}
+void handleLeds() {
+  if (!hostOk()) { server.send(403, "text/plain", ""); return; }
+  int n = rmtLeds;
+  if (n < 1 || n > MAX_LEDS) n = cfg.ledCount;
+  static uint8_t in[MAX_LEDS * 3], out[MAX_LEDS * 3];
+  memcpy(in, viewWant, n * 3);
+  memcpy(out, frame, n * 3);
+  char tvz[12] = "";
+  {
+    static char js[1401];
+    portENTER_CRITICAL(&tvMux); memcpy(js, tvStatusBuf, sizeof(js)); portEXIT_CRITICAL(&tvMux);
+    js[sizeof(js) - 1] = 0;
+    String z = jget(js, "zones", nullptr);
+    strlcpy(tvz, z.c_str(), sizeof(tvz));
+  }
+  uint32_t now = millis(), lrt = lastRealtimeMs;
+  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
+  String j; j.reserve(n * 12 + 400);
+  j += "{\"n\":" + String(n) + ",\"type\":" + String(cfg.stripType) + ",\"zones\":" + String(atoi(tvz) > 0 ? atoi(tvz) : n);
+  j += ",\"map\":" + String(tokenInt(cfg.tvTokens, "map", 0)) + ",\"rev\":" + String(tokenInt(cfg.tvTokens, "rev", 0));
+  j += ",\"rt\":" + String(rt ? "true" : "false") + ",\"test\":" + String(testMode != TEST_NONE ? "true" : "false");
+  j += ",\"src\":\"" + String(rt ? (const char *)rtProtocol : "-") + "\",\"fps\":" + String((float)rtFps, 1) + ",\"outFps\":" + String((float)outFps, 0);
+  j += ",\"bri\":" + String(cfg.brightness) + ",\"mA\":" + String((int)estCurrent) + ",\"lim\":" + String(limiting ? "true" : "false");
+  j += ",\"avg\":[" + String(analogRgb[0]) + "," + String(analogRgb[1]) + "," + String(analogRgb[2]) + "]";
+  j += ",\"pwm\":[" + String(analogPwm[0]) + "," + String(analogPwm[1]) + "," + String(analogPwm[2]) + "," + String(aPin[3] >= 0 ? (int)analogPwm[3] : -1) + "]";
+  j += ",\"pins\":[" + String(cfg.pinR) + "," + String(cfg.pinG) + "," + String(cfg.pinB) + "," + String(cfg.pinW) + "],\"pin\":" + String(cfg.ledPin);
+  j += ",\"in\":\""; hexAppend(j, in, n * 3);
+  j += "\",\"out\":\""; hexAppend(j, out, n * 3);
+  j += "\"}";
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", j);
+}
+
 void handleLog() {
   if (!hostOk()) { server.send(403, "text/plain", ""); return; }
   if (cfg.adminPass.length() && !apMode && !server.authenticate("admin", cfg.adminPass.c_str())) { server.requestAuthentication(BASIC_AUTH, "AmbiSync"); return; }
@@ -938,6 +1051,7 @@ void setupWeb() {
   server.on("/api/test", HTTP_POST, handleTest);
   server.on("/api/scan", HTTP_GET, handleScan);
   server.on("/api/log", HTTP_GET, handleLog);
+  server.on("/api/leds", HTTP_GET, handleLeds);
   server.on("/api/reboot", HTTP_POST, []() { if (!authOk()) return; server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); });
   server.on("/tv/control", HTTP_GET, handleTvControl);
   server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
@@ -1073,7 +1187,7 @@ void printHelp() {
   outRaw("  leds Anzahl                 Anzahl LEDs (1-490)");
   outRaw("  pin GPIO                    Daten-Pin der LEDs (WS2812B)");
   outRaw("  typ rgb | typ ws2812        normaler RGB-Streifen (R,G,B,+) oder WS2812B");
-  outRaw("  rgbpins R G B               Pins für den RGB-Streifen, z. B. rgbpins 25 26 27");
+  outRaw("  rgbpins R G B [W]           Pins für den RGB-Streifen, z. B. rgbpins 25 26 27 (W optional, z. B. 33)");
   outRaw("  farbe rot|gruen|blau|weiss  Streifen 10 s in einer Farbe (Kabel prüfen)");
   outRaw("  test kanten|weiss|regenbogen|erste|aus|ende");
   outRaw("  neustart                    ESP32 neu starten");
@@ -1136,10 +1250,14 @@ void handleSerial() {
       else LOG("Bitte so:  typ rgb   oder   typ ws2812");
     }
     else if (w == "rgbpins") {
-      int r = -1, g = -1, b = -1;
-      sscanf(rest.c_str(), "%d %d %d", &r, &g, &b);
-      if (!pinSafe(r) || !pinSafe(g) || !pinSafe(b) || r == g || r == b || g == b) LOG("Bitte so:  rgbpins 25 26 27   (erlaubte, verschiedene Pins)");
-      else { cfg.pinR = r; cfg.pinG = g; cfg.pinB = b; saveSettings(); ledReinit = true; LOG("RGB-Pins: Rot %d, Grün %d, Blau %d", r, g, b); }
+      int r = -1, g = -1, b = -1, wp = -1;
+      sscanf(rest.c_str(), "%d %d %d %d", &r, &g, &b, &wp);
+      if (!pinSafe(r) || !pinSafe(g) || !pinSafe(b) || r == g || r == b || g == b ||
+          (wp >= 0 && (!pinSafe(wp) || wp == r || wp == g || wp == b))) LOG("Bitte so:  rgbpins 25 26 27   oder mit Weiß:  rgbpins 25 26 27 33");
+      else {
+        cfg.pinR = r; cfg.pinG = g; cfg.pinB = b; cfg.pinW = wp; saveSettings(); ledReinit = true;
+        LOG("RGB-Pins: Rot %d, Grün %d, Blau %d%s", r, g, b, wp >= 0 ? (", Weiß " + String(wp)).c_str() : "");
+      }
     }
     else if (w == "farbe") {   // Kabel prüfen: farbe rot|gruen|blau|weiss|aus
       rest.trim(); rest.toLowerCase();
