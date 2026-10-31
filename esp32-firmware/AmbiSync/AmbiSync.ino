@@ -94,7 +94,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.3"
+#define FW_VERSION "1.0.4"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -108,6 +108,11 @@ static const int PORT_REALTIME = 21324;
 static const int PORT_DDP = 4048;
 static const int PORT_TVSTATUS = 21325;
 static const int PORT_DISCOVERY = 21326;   // TV-App sucht den ESP32 per Broadcast
+// Fest eingebautes Heim-WLAN (optional). Wird benutzt, wenn keins gespeichert ist oder das
+// gespeicherte nicht erreichbar ist. Leer lassen = Einrichtung nur über die Webseite / den Monitor.
+#define WIFI_SSID_BUILTIN ""
+#define WIFI_PASS_BUILTIN ""
+
 static const char *AP_SSID = "AmbiSync-Setup";
 static const char *AP_PASS = "ambisync-setup";
 
@@ -686,7 +691,7 @@ void handleSetConfig() {
   bool reLed = false, reboot = false;
   if (server.hasArg("admin")) {
     String a = server.arg("admin");
-    if (a.length() > 0 && a.length() < 6) { server.send(400, "application/json", "{\"ok\":false,\"error\":\"Passwort zu kurz (min. 6)\"}"); return; }
+    if (a.length() > 0 && a.length() < 6) { LOG("Web: NICHT gespeichert – Admin-Passwort zu kurz (min. 6 Zeichen)"); server.send(400, "application/json", "{\"ok\":false,\"error\":\"Passwort zu kurz (min. 6)\"}"); return; }
     if (a.length() >= 6) cfg.adminPass = a;   // leeres Feld = unverändert
   }
   if (server.hasArg("pin") && server.arg("pin").length()) {
@@ -710,6 +715,7 @@ void handleSetConfig() {
   if (server.hasArg("tv")) cfg.tvTokens = sanitizeTokens(server.arg("tv"));
   if (server.hasArg("host")) { String h = server.arg("host"); h.trim(); if (h.length() > 0 && h.length() < 32) { if (h != cfg.hostname) reboot = true; cfg.hostname = h; } }
   if (server.hasArg("ssid") && cfg.adminPass.length() == 0) {
+    LOG("Web: WLAN NICHT gespeichert – zuerst ein Admin-Passwort (min. 6 Zeichen) festlegen");
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"Bitte zuerst ein Admin-Passwort (min. 6 Zeichen) festlegen\"}");
     return;
   }
@@ -897,13 +903,12 @@ void startAp() {
   testUntilMs = 0;
 }
 
-bool connectWifi() {
-  if (cfg.ssid.length() == 0) return false;
+bool tryWifi(const String &ssid, const String &pass) {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(cfg.hostname.c_str());
   WiFi.setSleep(false);   // kein Stromsparen: sonst ruckelt der UDP-Empfang
-  WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
-  LOG("WLAN: verbinde mit \"%s\" (max. 20 s) ...", cfg.ssid.c_str());
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  LOG("WLAN: verbinde mit \"%s\" (max. 20 s) ...", ssid.c_str());
   uint32_t t0 = millis();
   int last = -1;
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
@@ -919,6 +924,21 @@ bool connectWifi() {
   WiFi.setAutoReconnect(true);
   LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel());
   LOG("Weboberfläche: http://%s  oder  http://%s.local", WiFi.localIP().toString().c_str(), cfg.hostname.c_str());
+  return true;
+}
+
+bool connectWifi() {
+  String bs = WIFI_SSID_BUILTIN, bp = WIFI_PASS_BUILTIN;
+  if (cfg.ssid.length()) {
+    if (tryWifi(cfg.ssid, cfg.pass)) return true;
+    if (bs.length() == 0 || bs == cfg.ssid) return false;
+    WiFi.disconnect(false); delay(200);
+  }
+  if (bs.length() == 0) { LOG("WLAN: kein Heim-WLAN gespeichert und keins im Code eingebaut"); return false; }
+  LOG("WLAN: nutze das im Code eingebaute WLAN \"%s\"", bs.c_str());
+  if (cfg.ssid.length() == 0) { cfg.ssid = bs; cfg.pass = bp; }   // damit der Einrichtungsmodus es im Hintergrund weiter versucht
+  if (!tryWifi(bs, bp)) return false;
+  cfg.ssid = bs; cfg.pass = bp;   // nur im Speicher; über die Webseite gespeichertes WLAN hat Vorrang
   return true;
 }
 
