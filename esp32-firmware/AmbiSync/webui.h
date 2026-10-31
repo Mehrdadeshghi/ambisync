@@ -96,9 +96,14 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 
 <section>
 <h2>LED-Streifen</h2>
-<div class="row"><div><label>Daten-Pin (GPIO)</label><input id="pin" type="number" min="0" max="48"></div>
-<div><label>Anzahl LEDs</label><input id="leds" type="number" min="1" max="490"></div></div>
-<label>Farbreihenfolge</label><select id="order"><option value="0">GRB (WS2812B, üblich)</option><option value="1">RGB</option><option value="2">BRG</option><option value="3">RBG</option><option value="4">GBR</option><option value="5">BGR</option></select>
+<label>Art des Streifens</label><select id="type" onchange="typeUi()"><option value="0">WS2812B – jede LED einzeln (echtes Ambilight)</option><option value="1">normaler RGB-Streifen (R, G, B, +) – eine Farbe für alles</option></select>
+<div id="rgbBox" style="display:none">
+<div class="row" style="grid-template-columns:1fr 1fr 1fr"><div><label>Rot an GPIO</label><input id="pinR" type="number" min="0" max="48"></div>
+<div><label>Grün an GPIO</label><input id="pinG" type="number" min="0" max="48"></div><div><label>Blau an GPIO</label><input id="pinB" type="number" min="0" max="48"></div></div>
+<div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung der Farbe. Der Streifen zeigt die Durchschnittsfarbe des Bildes.</div></div>
+<div class="row"><div id="pinBox"><label>Daten-Pin (GPIO)</label><input id="pin" type="number" min="0" max="48"></div>
+<div><label>Anzahl LEDs / Zonen</label><input id="leds" type="number" min="1" max="490"></div></div>
+<div id="orderBox"><label>Farbreihenfolge</label><select id="order"><option value="0">GRB (WS2812B, üblich)</option><option value="1">RGB</option><option value="2">BRG</option><option value="3">RBG</option><option value="4">GBR</option><option value="5">BGR</option></select></div>
 <label>Helligkeit <span id="briV"></span></label><input id="bri" type="range" min="0" max="255" oninput="briV.textContent=Math.round(this.value/2.55)+' %'">
 <div class="row"><div><label>Max. Strom (mA, 0 = aus)</label><input id="maxmA" type="number" min="0" step="500"></div>
 <div><label>mA pro Farbkanal</label><input id="mAch" type="number" min="1" max="60"></div></div>
@@ -186,7 +191,7 @@ async function refresh(){
 async function loadCfg(){
  const r=await fetch('/api/config',{headers:H});if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri','host','allow'].forEach(k=>$(k).value=c[k]);
+ ['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
@@ -194,7 +199,8 @@ async function loadCfg(){
  (c.tv||'').split(',').filter(Boolean).forEach(p=>{const i=p.indexOf('=');const k=p.slice(0,i),v=p.slice(i+1);if(TVKEYS.includes(k))tv[k]=v;else extra.push(p)});
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
 }
-function saveLed(){const d={};['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function typeUi(){const a=$('type').value==='1';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
+function saveLed(){const d={};['type','pinR','pinG','pinB','pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}

@@ -30,6 +30,7 @@
 // Vorwärtsdeklarationen (Funktionen werden vor ihrer Definition benutzt)
 bool pinSafe(int p);
 int defaultPin();
+void defaultRgbPins();
 void logTvDetails(bool force);
 
 // ---- Protokoll im seriellen Monitor (115200 Baud): alles, was der ESP32 tut ----
@@ -95,7 +96,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.5"
+#define FW_VERSION "1.0.6"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -113,6 +114,8 @@ static const int PORT_DISCOVERY = 21326;   // TV-App sucht den ESP32 per Broadca
 // gespeicherte nicht erreichbar ist. Leer lassen = Einrichtung nur über die Webseite / den Monitor.
 #define WIFI_SSID_BUILTIN ""
 #define WIFI_PASS_BUILTIN ""
+// Art des LED-Streifens beim ersten Start: 0 = WS2812B, 1 = normaler RGB-Streifen (R, G, B, +)
+#define STRIP_TYPE_DEFAULT 0
 
 static const char *AP_SSID = "AmbiSync-Setup";
 static const char *AP_PASS = "ambisync-setup";
@@ -123,6 +126,8 @@ struct Settings {
   String hostname = "ambisync";
   String adminPass;           // leer = keine Anmeldung nötig
   int ledPin = 16;
+  int stripType = 0;          // 0 = WS2812B (jede LED einzeln), 1 = normaler RGB-Streifen (R, G, B, +) über 3 MOSFETs
+  int pinR = 25, pinG = 26, pinB = 27;
   int ledCount = 60;
   int colorOrder = 0;         // 0 GRB, 1 RGB, 2 BRG, 3 RBG, 4 GBR, 5 BGR
   int brightness = 255;       // 0..255
@@ -152,6 +157,9 @@ void loadSettings() {
   cfg.adminPass = prefs.getString("admin", "");
   cfg.ledPin = prefs.getInt("pin", -1);
   if (!pinSafe(cfg.ledPin)) cfg.ledPin = defaultPin();
+  cfg.stripType = constrain(prefs.getInt("type", STRIP_TYPE_DEFAULT), 0, 1);
+  cfg.pinR = prefs.getInt("pinR", -1); cfg.pinG = prefs.getInt("pinG", -1); cfg.pinB = prefs.getInt("pinB", -1);
+  if (!pinSafe(cfg.pinR) || !pinSafe(cfg.pinG) || !pinSafe(cfg.pinB)) defaultRgbPins();
   cfg.ledCount = constrain(prefs.getInt("leds", 60), 1, MAX_LEDS);
   cfg.colorOrder = constrain(prefs.getInt("order", 0), 0, 5);
   cfg.brightness = constrain(prefs.getInt("bri", 255), 0, 255);
@@ -175,6 +183,8 @@ void saveSettings() {
   prefs.putString("admin", cfg.adminPass);
   prefs.putInt("pin", cfg.ledPin);
   prefs.putInt("leds", cfg.ledCount);
+  prefs.putInt("type", cfg.stripType);
+  prefs.putInt("pinR", cfg.pinR); prefs.putInt("pinG", cfg.pinG); prefs.putInt("pinB", cfg.pinB);
   prefs.putInt("order", cfg.colorOrder);
   prefs.putInt("bri", cfg.brightness);
   prefs.putInt("maxmA", cfg.maxCurrent);
@@ -201,6 +211,16 @@ bool pinSafe(int p) {
   return (p >= 0 && p <= 7) || p == 10 || p == 20 || p == 21;
 #else
   return p >= 0 && p <= 48;
+#endif
+}
+
+void defaultRgbPins() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  cfg.pinR = 5; cfg.pinG = 6; cfg.pinB = 7;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  cfg.pinR = 4; cfg.pinG = 5; cfg.pinB = 6;
+#else
+  cfg.pinR = 25; cfg.pinG = 26; cfg.pinB = 27;
 #endif
 }
 
@@ -248,10 +268,35 @@ static int rmtLeds = 0;
 static int rmtPin = -1;
 static volatile bool ledReinit = true;
 
+// normaler RGB-Streifen: drei PWM-Ausgänge (über MOSFETs), ganzer Streifen eine Farbe
+static bool analogOn = false;
+static int aPin[3] = {-1, -1, -1};
+static uint8_t analogRgb[3] = {0, 0, 0};
+static const int PWM_BITS = 12, PWM_FREQ = 5000;
+
+void analogOff() {
+  for (int c = 0; c < 3; c++) if (aPin[c] >= 0) { ledcWrite(aPin[c], 0); ledcDetach(aPin[c]); pinMode(aPin[c], OUTPUT); digitalWrite(aPin[c], LOW); aPin[c] = -1; }
+  analogOn = false;
+}
+
 bool ledInit() {
-  if (rmtPin >= 0) rmtDeinit(rmtPin);
+  if (rmtPin >= 0) { rmtDeinit(rmtPin); rmtPin = -1; }
+  analogOff();
   if (rmtBuf) { free(rmtBuf); rmtBuf = nullptr; }
   rmtLeds = cfg.ledCount;
+  if (cfg.stripType == 1) {
+    int pins[3] = {cfg.pinR, cfg.pinG, cfg.pinB};
+    for (int c = 0; c < 3; c++) {
+      if (!ledcAttach(pins[c], PWM_FREQ, PWM_BITS)) { LOG("LED: FEHLER – PWM auf GPIO %d lässt sich nicht starten", pins[c]); analogOff(); return false; }
+      ledcWrite(pins[c], 0);
+      aPin[c] = pins[c];
+    }
+    analogOn = true;
+    LOG("LED: normaler RGB-Streifen – Rot an GPIO %d, Grün an GPIO %d, Blau an GPIO %d (PWM %d Hz), Helligkeit %d%%",
+        aPin[0], aPin[1], aPin[2], PWM_FREQ, cfg.brightness * 100 / 255);
+    LOG("     Der ganze Streifen zeigt die Durchschnittsfarbe des Bildes (%d Zonen)", rmtLeds);
+    return true;
+  }
   rmtBuf = (rmt_data_t *)malloc(sizeof(rmt_data_t) * MAX_LEDS * 24);   // ~47 KB, reicht für jede Länge
   if (!rmtBuf) { LOG("LED: FEHLER – kein Speicher für %d LEDs", MAX_LEDS); rmtPin = -1; return false; }
   // 10 MHz = 100 ns pro Takt
@@ -278,6 +323,23 @@ static const uint8_t ORDER[6][3] = {
 };
 
 void ledShow(const uint8_t *rgb) {
+  if (analogOn) {
+    // Durchschnitt aller Zonen; hellere/kräftigere Zonen zählen etwas mehr, damit es nicht grau wird
+    float acc[3] = {0, 0, 0}, wsum = 0;
+    for (int i = 0; i < rmtLeds; i++) {
+      int r = rgb[i * 3], g = rgb[i * 3 + 1], b = rgb[i * 3 + 2];
+      int mx = max(r, max(g, b)), mn = min(r, min(g, b));
+      float w = 1.0f + (mx - mn) / 64.0f + mx / 128.0f;
+      acc[0] += r * w; acc[1] += g * w; acc[2] += b * w; wsum += w;
+    }
+    for (int c = 0; c < 3; c++) {
+      float v = wsum > 0 ? acc[c] / wsum : 0;           // 0..255
+      analogRgb[c] = (uint8_t)(v + 0.5f);
+      float lin = powf(v / 255.0f, 2.2f);               // Gamma: dunkle Töne sauber auflösen
+      ledcWrite(aPin[c], (uint32_t)(lin * ((1 << PWM_BITS) - 1) + 0.5f));
+    }
+    return;
+  }
   if (rmtPin < 0 || !rmtBuf) return;
   const uint8_t *ord = ORDER[cfg.colorOrder];
   size_t k = 0;
@@ -635,7 +697,8 @@ void handleStatus() {
   j += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
   j += "\"leds\":" + String(cfg.ledCount) + ",";
   j += "\"pin\":" + String(cfg.ledPin) + ",";
-  j += "\"ledOk\":" + String(rmtPin >= 0 ? "true" : "false") + ",";
+  j += "\"ledOk\":" + String(rmtPin >= 0 || analogOn ? "true" : "false") + ",";
+  j += "\"type\":" + String(cfg.stripType) + ",";
   j += "\"outFps\":" + String(outFps, 1) + ",";
   j += "\"rt\":{\"active\":" + String(rt ? "true" : "false") +
        ",\"fps\":" + String(rtFps, 1) +
@@ -667,6 +730,8 @@ void handleGetConfig() {
   j += "\"hasAdmin\":" + String(cfg.adminPass.length() ? "true" : "false") + ",";
   j += "\"pin\":" + String(cfg.ledPin) + ",";
   j += "\"leds\":" + String(cfg.ledCount) + ",";
+  j += "\"type\":" + String(cfg.stripType) + ",";
+  j += "\"pinR\":" + String(cfg.pinR) + ",\"pinG\":" + String(cfg.pinG) + ",\"pinB\":" + String(cfg.pinB) + ",";
   j += "\"order\":" + String(cfg.colorOrder) + ",";
   j += "\"bri\":" + String(cfg.brightness) + ",";
   j += "\"maxmA\":" + String(cfg.maxCurrent) + ",";
@@ -694,6 +759,16 @@ void handleSetConfig() {
     String a = server.arg("admin");
     if (a.length() > 0 && a.length() < 6) { LOG("Web: NICHT gespeichert – Admin-Passwort zu kurz (min. 6 Zeichen)"); server.send(400, "application/json", "{\"ok\":false,\"error\":\"Passwort zu kurz (min. 6)\"}"); return; }
     if (a.length() >= 6) cfg.adminPass = a;   // leeres Feld = unverändert
+  }
+  if (server.hasArg("type") && server.arg("type").length()) {
+    int t = argInt("type", cfg.stripType, 0, 1);
+    int r = argInt("pinR", cfg.pinR, 0, 48), g = argInt("pinG", cfg.pinG, 0, 48), b = argInt("pinB", cfg.pinB, 0, 48);
+    if (t == 1 && (!pinSafe(r) || !pinSafe(g) || !pinSafe(b) || r == g || r == b || g == b)) {
+      LOG("Web: NICHT gespeichert – RGB-Pins ungültig oder doppelt (%d/%d/%d)", r, g, b);
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"RGB-Pins ungültig oder doppelt\"}"); return;
+    }
+    if (t != cfg.stripType || r != cfg.pinR || g != cfg.pinG || b != cfg.pinB) reLed = true;
+    cfg.stripType = t; cfg.pinR = r; cfg.pinG = g; cfg.pinB = b;
   }
   if (server.hasArg("pin") && server.arg("pin").length()) {
     int p = argInt("pin", cfg.ledPin, 0, 48);
@@ -973,9 +1048,15 @@ void printStatus() {
   uint32_t lrt = lastRealtimeMs;
   bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
   uint32_t tvMs = tvStatusMs;
-  LOG("STATUS | WLAN: %s | LEDs: %d an GPIO %d%s, %.0f Bilder/s | Farben: %s | TV: %s | Strom ~%.2f A%s | Speicher %u KB",
+  char ledDesc[96];
+  if (cfg.stripType == 1)
+    snprintf(ledDesc, sizeof(ledDesc), "RGB-Streifen R%d/G%d/B%d%s, Farbe %d,%d,%d", cfg.pinR, cfg.pinG, cfg.pinB, analogOn ? "" : " (FEHLER)",
+             analogRgb[0], analogRgb[1], analogRgb[2]);
+  else
+    snprintf(ledDesc, sizeof(ledDesc), "%d WS2812B an GPIO %d%s", cfg.ledCount, cfg.ledPin, rmtPin >= 0 ? "" : " (FEHLER)");
+  LOG("STATUS | WLAN: %s | LEDs: %s, %.0f Bilder/s | Farben: %s | TV: %s | Strom ~%.2f A%s | Speicher %u KB",
       apMode ? "Einrichtungsmodus" : (WiFi.status() == WL_CONNECTED ? (WiFi.localIP().toString() + " " + String(WiFi.RSSI()) + " dBm").c_str() : wlStatusName(WiFi.status())),
-      cfg.ledCount, cfg.ledPin, rmtPin >= 0 ? "" : " (FEHLER)", (float)outFps,
+      ledDesc, (float)outFps,
       rt ? (String(rtProtocol) + " " + String((float)rtFps, 1) + "/s von " + IPAddress(rtSourceIp).toString()).c_str() : "keine",
       tvMs ? ((int32_t)(now - tvMs) < 6000 ? ("verbunden (" + IPAddress(tvIpNum).toString() + ")").c_str() : ("still seit " + String((now - tvMs) / 1000) + " s").c_str()) : "noch nie gemeldet",
       estCurrent / 1000.0f, limiting ? " (begrenzt)" : "", (unsigned)(ESP.getFreeHeap() / 1024));
@@ -990,7 +1071,10 @@ void printHelp() {
   outRaw("  wifi \"Name\" Passwort        Heim-WLAN setzen und neu starten (Anführungszeichen bei Leerzeichen)");
   outRaw("  admin Passwort              Admin-Passwort der Weboberfläche setzen (min. 6 Zeichen)");
   outRaw("  leds Anzahl                 Anzahl LEDs (1-490)");
-  outRaw("  pin GPIO                    Daten-Pin der LEDs");
+  outRaw("  pin GPIO                    Daten-Pin der LEDs (WS2812B)");
+  outRaw("  typ rgb | typ ws2812        normaler RGB-Streifen (R,G,B,+) oder WS2812B");
+  outRaw("  rgbpins R G B               Pins für den RGB-Streifen, z. B. rgbpins 25 26 27");
+  outRaw("  farbe rot|gruen|blau|weiss  Streifen 10 s in einer Farbe (Kabel prüfen)");
   outRaw("  test kanten|weiss|regenbogen|erste|aus|ende");
   outRaw("  neustart                    ESP32 neu starten");
   outRaw("  werkreset                   ALLE Einstellungen löschen (WLAN, Passwort, LEDs)");
@@ -1045,6 +1129,30 @@ void handleSerial() {
       cfg.adminPass = rest; saveSettings(); LOG("Admin-Passwort gesetzt (Benutzer: admin)");
     }
     else if (w == "leds") { int n = rest.toInt(); if (n < 1 || n > MAX_LEDS) LOG("1 bis %d", MAX_LEDS); else { cfg.ledCount = n; saveSettings(); ledReinit = true; LOG("LED-Anzahl: %d", n); } }
+    else if (w == "typ" || w == "type") {
+      rest.trim(); rest.toLowerCase();
+      if (rest == "rgb") { cfg.stripType = 1; saveSettings(); ledReinit = true; LOG("Streifen-Typ: normaler RGB-Streifen (R, G, B, +)"); }
+      else if (rest == "ws2812" || rest == "ws2812b") { cfg.stripType = 0; saveSettings(); ledReinit = true; LOG("Streifen-Typ: WS2812B"); }
+      else LOG("Bitte so:  typ rgb   oder   typ ws2812");
+    }
+    else if (w == "rgbpins") {
+      int r = -1, g = -1, b = -1;
+      sscanf(rest.c_str(), "%d %d %d", &r, &g, &b);
+      if (!pinSafe(r) || !pinSafe(g) || !pinSafe(b) || r == g || r == b || g == b) LOG("Bitte so:  rgbpins 25 26 27   (erlaubte, verschiedene Pins)");
+      else { cfg.pinR = r; cfg.pinG = g; cfg.pinB = b; saveSettings(); ledReinit = true; LOG("RGB-Pins: Rot %d, Grün %d, Blau %d", r, g, b); }
+    }
+    else if (w == "farbe") {   // Kabel prüfen: farbe rot|gruen|blau|weiss|aus
+      rest.trim(); rest.toLowerCase();
+      int t = rest == "rot" ? 0 : rest == "gruen" || rest == "grün" ? 1 : rest == "blau" ? 2 : rest == "weiss" || rest == "weiß" ? 3 : 4;
+      testMode = TEST_NONE;
+      uint8_t c3[3] = {0, 0, 0};
+      if (t < 3) c3[t] = 255; else if (t == 3) c3[0] = c3[1] = c3[2] = 255;
+      portENTER_CRITICAL(&frameMux);
+      for (int i = 0; i < MAX_LEDS; i++) memcpy(&target[i * 3], c3, 3);
+      portEXIT_CRITICAL(&frameMux);
+      lastRealtimeMs = millis(); realtimeTimeoutMs = 10000; rtProtocol = "Test";
+      LOG("Farbe %s für 10 s", rest.c_str());
+    }
     else if (w == "pin") { int p = rest.toInt(); if (!pinSafe(p)) LOG("GPIO %d ist nicht erlaubt (Flash/PSRAM/USB)", p); else { cfg.ledPin = p; saveSettings(); ledReinit = true; LOG("LED-Pin: GPIO %d", p); } }
     else if (w == "test") {
       rest.trim(); rest.toLowerCase();
@@ -1143,9 +1251,9 @@ void setup() {
   int rr = (int)esp_reset_reason();
   LOG("Start-Grund: %s", rr >= 0 && rr <= 10 ? RR[rr] : "?");
   loadSettings();
-  LOG("Einstellungen: WLAN \"%s\", Name %s.local, Admin-Passwort %s, %d LEDs an GPIO %d, Filter-IP %s",
+  LOG("Einstellungen: WLAN \"%s\", Name %s.local, Admin-Passwort %s, Streifen %s, Filter-IP %s",
       cfg.ssid.length() ? cfg.ssid.c_str() : "(keins)", cfg.hostname.c_str(), cfg.adminPass.length() ? "gesetzt" : "NICHT gesetzt",
-      cfg.ledCount, cfg.ledPin, cfg.allowIp.length() ? cfg.allowIp.c_str() : "(alle)");
+      cfg.stripType == 1 ? (String("RGB R") + cfg.pinR + "/G" + cfg.pinG + "/B" + cfg.pinB).c_str() : (String(cfg.ledCount) + " WS2812B an GPIO " + cfg.ledPin).c_str(), cfg.allowIp.length() ? cfg.allowIp.c_str() : "(alle)");
   WiFi.onEvent(onWifiEvent);
   memset(target, 0, sizeof(target));
 
