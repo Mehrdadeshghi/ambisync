@@ -119,3 +119,7 @@ So liest du die Diagnose unter „Menü-Erkennung“:
 ## Lizenz
 
 MIT. Die TV-App basiert auf TizenAmbilight von Ritwick Verma (MIT, siehe `tv-app/LICENSE` und `tv-app/UPSTREAM-README.md`).
+
+## Weboberfläche ändern
+
+Die Seite liegt in `esp32-firmware/webui-src/index.html`. Nach einer Änderung `python3 esp32-firmware/tools/make_webui.py` ausführen. Das Skript erzeugt `AmbiSync/webui.h` als gzip-komprimierte Byte-Liste. Als Text-Konstante würde die Arduino IDE JavaScript-Zeilen wie `async function refresh(){` für C++-Funktionen halten und Code mitten in die Seite schreiben.

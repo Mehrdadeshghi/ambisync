@@ -97,7 +97,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.7"
+#define FW_VERSION "1.0.8"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -1043,7 +1043,9 @@ void setupWeb() {
   server.collectHeaders(hdrs, 1);
   server.on("/", HTTP_GET, []() {
     if (!hostOk()) { server.sendHeader("Location", String("http://") + (apMode ? WiFi.softAPIP() : WiFi.localIP()).toString() + "/", true); server.send(302, "text/plain", ""); return; }
-    server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+    server.sendHeader("Content-Encoding", "gzip");
+    server.sendHeader("Cache-Control", "no-cache");
+    server.send_P(200, "text/html; charset=utf-8", (const char *)INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
   });
   server.on("/api/status", HTTP_GET, []() { if (hostOk()) handleStatus(); else server.send(403, "text/plain", ""); });
   server.on("/api/config", HTTP_GET, handleGetConfig);
@@ -1320,6 +1322,10 @@ void logTvDetails(bool force) {
       jget(js, "ver", nullptr).c_str(), power.c_str(), backend.length() ? backend.c_str() : "-", jget(js, "fps", nullptr).c_str(),
       jget(js, "frames", nullptr).c_str(), jget(js, "sendOk", nullptr).c_str(), jget(js, "sendFail", nullptr).c_str());
   if (st.length()) LOG("   Meldung der App: %s", st.c_str());
+  if (st.indexOf("rc=-2") >= 0)
+    LOG("   >>> Bildaufnahme im Fernseher hängt (rc=-2). Lösung: Fernseher 60 s vom Strom trennen (Stecker ziehen). Die App danach nicht antippen.");
+  else if (st.indexOf("rc=-4") >= 0)
+    LOG("   >>> Geschützter Inhalt (DRM, z. B. Netflix): Die App nutzt dann die gröbere Samsung-Farbmessung.");
   if (ui) LOG("   Menü-Erkennung: Modus %s, läuft %s, Transparenz %s, %s Aufnahmen (%sx%s), Fehler %s, Menü-Anteil %s%s%s",
               uMode.c_str(), uRun == "true" ? "ja" : "nein", jget(js, "alphaSeen", ui) == "true" ? "erkannt" : "nein",
               jget(js, "frames", ui).c_str(), jget(js, "w", ui).c_str(), jget(js, "h", ui).c_str(), jget(js, "fails", ui).c_str(),
