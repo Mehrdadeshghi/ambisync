@@ -72,7 +72,8 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <g clip-path="url(#cScr)"><rect x="150" y="105" width="700" height="394" fill="#000"/><g id="lvScr" filter="url(#fSoft)"></g>
 <rect x="150" y="105" width="700" height="394" fill="url(#gVig)"/></g>
 <text x="500" y="292" text-anchor="middle" fill="#8b93a3" font-size="17">Fernseher-Bild (Ränder)</text>
-<text id="lvMid" x="500" y="318" text-anchor="middle" fill="#5d6575" font-size="14"></text>
+<text id="lvMid" x="500" y="322" text-anchor="middle" fill="#e0a63a" font-size="15"></text>
+<text id="lvMid2" x="500" y="346" text-anchor="middle" fill="#8b93a3" font-size="13"></text>
 <rect x="470" y="509" width="60" height="10" fill="#1a1d24"/><rect x="420" y="519" width="160" height="8" rx="3" fill="#1a1d24"/>
 <g id="lvStrip"></g>
 <g id="lvMarks" font-size="13" font-weight="600" text-anchor="middle"></g>
@@ -129,7 +130,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div><label>Grün an GPIO</label><input id="pinG" type="number" min="0" max="48"></div><div><label>Blau an GPIO</label><input id="pinB" type="number" min="0" max="48"></div></div>
 <label>Weiß an GPIO (nur RGBW/RGBWW-Streifen, -1 = keiner)</label><input id="pinW" type="number" min="-1" max="48">
 <label>Welche Farbe der Streifen zeigt</label><select id="rgbMode"><option value="0">vorherrschende Farbe des Bildes (empfohlen)</option><option value="1">Durchschnitt aller Ränder</option></select>
-<div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung seiner Farbe, der Plus-Anschluss des Streifens bleibt am Netzteil. Der Streifen zeigt die Durchschnittsfarbe des Bildes.</div></div>
+<div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung seiner Farbe, der Plus-Anschluss des Streifens bleibt am Netzteil. Der Streifen zeigt die vorherrschende Farbe des Bildes.</div></div>
 <div class="row"><div id="pinBox"><label>Daten-Pin (GPIO)</label><input id="pin" type="number" min="0" max="48"></div>
 <div><label>Anzahl LEDs / Zonen</label><input id="leds" type="number" min="1" max="490"></div></div>
 <div id="orderBox"><label>Farbreihenfolge</label><select id="order"><option value="0">GRB (WS2812B, üblich)</option><option value="1">RGB</option><option value="2">BRG</option><option value="3">RBG</option><option value="4">GBR</option><option value="5">BGR</option></select></div>
@@ -202,7 +203,7 @@ async function refresh(){
   $('sTv').innerHTML=tvOk?dot('ok')+'verbunden ('+esc(s.tvIp)+')':(s.tvAgeMs<0?dot('')+'noch nie gemeldet':dot('warn')+'seit '+Math.round(s.tvAgeMs/1000)+' s still');
   $('sSrc').innerHTML=s.rt.active?dot('ok')+esc(s.rt.proto)+' von '+esc(s.rt.source):dot('')+'keine'+(s.rt.rejected?' ('+s.rt.rejected+' abgelehnt)':'');
   $('sRt').textContent=(Number(s.rt.fps)||0).toFixed(1);
-  $('sOut').innerHTML=(s.ledOk?dot('ok'):dot('bad')+'Fehler · ')+s.leds+' LEDs an GPIO '+s.pin+' · '+s.outFps.toFixed(0)+' Bilder/s';
+  $('sOut').innerHTML=(s.ledOk?dot('ok'):dot('bad')+'Fehler · ')+(s.type==1?'RGB-Streifen (eine Farbe)':s.leds+' LEDs an GPIO '+s.pin)+' · '+s.outFps.toFixed(0)+' Bilder/s';
   $('sCur').innerHTML=(s.limiting?dot('warn'):'')+(s.current/1000).toFixed(2)+' A'+(s.limiting?' (begrenzt)':'');
   $('sWifi').textContent=s.ap?'Einrichtungs-WLAN':s.rssi+' dBm';
   $('sUp').textContent=fmtUp(s.uptime);
@@ -304,10 +305,22 @@ function lvDraw(d){const sig=[d.n,Math.max(1,d.zones),d.map,d.rev,d.type].join('
   const ch=[['Rot','#ff4d4d',d.pwm[0],d.pins[0]],['Grün','#3fdc6a',d.pwm[1],d.pins[1]],['Blau','#4d7dff',d.pwm[2],d.pins[2]]];if(d.pwm[3]>=0)ch.push(['Weiß','#f2f2f2',d.pwm[3],d.pins[3]]);
   $('lvChans').innerHTML='<div class="chan"><span class="swatch" style="background:'+c+'"></span>Streifen-Farbe<br><b>'+d.avg.join(', ')+'</b></div>'+ch.map(x=>'<div class="chan">'+x[0]+' · GPIO '+x[3]+'<br><b>'+pct(x[2])+' %</b> PWM<div class="bar"><i style="width:'+pct(x[2])+'%;background:'+x[1]+'"></i></div></div>').join('');
   $('lvRgb').style.display=''} else $('lvRgb').style.display='none';
- $('lvMid').textContent=d.test?'Testbild läuft':d.rt?'':'keine Farben vom Fernseher – Leerlauf';
+ const why=lvWhy(d);$('lvMid').textContent=why[0];$('lvMid2').textContent=why[1];
  $('lvInfo').innerHTML=(d.test?'<span><b>Testbild</b></span>':d.rt?'<span>Quelle <b>'+esc(d.src)+'</b> · <b>'+d.fps+'</b> Bilder/s vom TV</span>':'<span><b>kein Signal</b> vom Fernseher</span>')+
   '<span><b>'+d.outFps+'</b> Bilder/s an die LEDs</span><span>'+(d.type==1?'RGB-Streifen, eine Farbe':d.n+' LEDs an GPIO '+d.pin)+'</span><span>Helligkeit <b>'+Math.round(d.bri/2.55)+' %</b></span>'+
   (d.type==1?'':'<span>Strom ~<b>'+(d.mA/1000).toFixed(2)+' A</b>'+(d.lim?' (begrenzt)':'')+'</span>')+(d.zones!=d.n?'<span style="color:var(--warn)">TV-Zonen '+d.zones+' ≠ LEDs '+d.n+'</span>':'')}
+// Warum ist das Bild schwarz? Aus den Meldungen der TV-App in Klartext übersetzen
+function lvWhy(d){if(d.test)return['Testbild läuft',''];
+ if(!d.tv)return d.rt?['','']:['Keine Verbindung zur TV-App','Fernseher an? AmbiSync startet mit dem Fernseher von selbst.'];
+ if(d.tvFps>0.5)return['',''];
+ const st=d.tvSt||'',ui=d.tvUi||'';
+ let a='Der Fernseher liefert gerade kein Bild',b='';
+ if(/rc=-2\b/.test(st))b='Bildaufnahme hängt: Fernseher 60 s vom Strom trennen';
+ else if(/rc=-4\b/.test(st))b='Geschützter Inhalt (DRM) – Samsung-Farbmessung wird versucht';
+ else if(/rc=-1\b/.test(st))b='Video-Ebene: kein Video aktiv'+(/rc=1\b/.test(ui)?' · Menü-Aufnahme: kein Bild':'');
+ else if(/paused/.test(st))b='Aufnahme pausiert (Steuerkanal)';
+ else b=st.slice(0,70);
+ return[a,b]}
 let lvT=0;async function lvTick(){clearTimeout(lvT);if(document.visibilityState==='visible'){try{const r=await fetch('/api/leds',{cache:'no-store'});if(r.ok)lvDraw(await r.json())}catch(e){}}lvT=setTimeout(lvTick,150)}
 lvTick();
 refresh();loadCfg().then(()=>{});setInterval(refresh,1500);

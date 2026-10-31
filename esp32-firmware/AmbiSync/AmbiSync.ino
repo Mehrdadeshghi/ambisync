@@ -97,7 +97,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.8"
+#define FW_VERSION "1.0.9"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -979,12 +979,18 @@ void handleLeds() {
   memcpy(in, viewWant, n * 3);
   memcpy(out, frame, n * 3);
   char tvz[12] = "";
+  String tvSt, tvUiErr, tvFps, tvBack;
   {
     static char js[1401];
     portENTER_CRITICAL(&tvMux); memcpy(js, tvStatusBuf, sizeof(js)); portEXIT_CRITICAL(&tvMux);
     js[sizeof(js) - 1] = 0;
     String z = jget(js, "zones", nullptr);
     strlcpy(tvz, z.c_str(), sizeof(tvz));
+    if (tvStatusMs && (int32_t)(millis() - tvStatusMs) < 6000) {
+      const char *ui = strstr(js, "\"ui\":{");
+      tvSt = jget(js, "status", nullptr); tvFps = jget(js, "fps", nullptr); tvBack = jget(js, "backend", nullptr);
+      if (ui) tvUiErr = jget(js, "err", ui);
+    }
   }
   uint32_t now = millis(), lrt = lastRealtimeMs;
   bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
@@ -997,6 +1003,8 @@ void handleLeds() {
   j += ",\"avg\":[" + String(analogRgb[0]) + "," + String(analogRgb[1]) + "," + String(analogRgb[2]) + "]";
   j += ",\"pwm\":[" + String(analogPwm[0]) + "," + String(analogPwm[1]) + "," + String(analogPwm[2]) + "," + String(aPin[3] >= 0 ? (int)analogPwm[3] : -1) + "]";
   j += ",\"pins\":[" + String(cfg.pinR) + "," + String(cfg.pinG) + "," + String(cfg.pinB) + "," + String(cfg.pinW) + "],\"pin\":" + String(cfg.ledPin);
+  j += ",\"tv\":" + String(tvSt.length() || tvBack.length() ? "true" : "false");
+  j += ",\"tvSt\":\"" + jsonEsc(tvSt) + "\",\"tvUi\":\"" + jsonEsc(tvUiErr) + "\",\"tvBack\":\"" + jsonEsc(tvBack) + "\",\"tvFps\":" + String(tvFps.length() ? tvFps.toFloat() : 0, 1);
   j += ",\"in\":\""; hexAppend(j, in, n * 3);
   j += "\",\"out\":\""; hexAppend(j, out, n * 3);
   j += "\"}";
