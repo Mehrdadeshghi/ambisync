@@ -10,7 +10,7 @@ while time.time()-t0<25 and not ("status" in got and "rt" in got):
     for s in r:
         d,a=s.recvfrom(2048)
         if s is disc and d.startswith(b"AMBISYNC-DISCOVER"):
-            s.sendto(f"AMBISYNC 1 leds={LEDS} port=21324".encode(), a); got["disc"]=a
+            s.sendto(f"AMBISYNC 1 leds={LEDS} port=21324 fw=1.1.0".encode(), a); got["disc"]=a
         elif s is stat:
             j=json.loads(d.decode()); got["status"]=j
         elif s is rt:

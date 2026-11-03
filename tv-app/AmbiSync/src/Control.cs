@@ -23,10 +23,34 @@ namespace TizenAmbilight
         static bool _pauseLogged;
 
 
+        /// <summary>AmbiSync Plug &amp; Play: neue LED-Anzahl vom ESP32 sofort übernehmen. Kam die Zonenzahl
+        /// vom ESP32 (nicht fest in config.json), wächst oder schrumpft sie mit; die Hauptschleife baut die
+        /// Zonen dann selbst neu auf.</summary>
+        static void ApplyLedCount(Config cfg, int n)
+        {
+            if (cfg.LedCount == n && (_zoneCountFixed || _ledCountFixed || cfg.ZoneCount == n)) return;
+            cfg.LedCount = n;
+            if (!_zoneCountFixed && !_ledCountFixed && cfg.ZoneCount != n)
+            {
+                int old = cfg.ZoneCount;
+                cfg.ZoneCount = n;
+                cfg.MapOffset = ((cfg.MapOffset % n) + n) % n;
+                UiOverlay.SetZoneCount(n);
+                L("control: LED-Anzahl vom ESP32 " + old + " -> " + n + " (Zonen werden neu aufgeteilt)");
+            }
+        }
+
         static void ApplyControl(string body, Config cfg, Stats st)
         {
             if (body == null) return;
-            foreach (string rawTok in body.Split(new[] { ',', '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            // "leds=" zuerst anwenden: ändert sich dabei die Zonenzahl, rechnen map/rev im selben Durchgang
+            // schon mit der neuen Zahl (sonst stimmt das Mapping erst beim nächsten Abruf).
+            var toks = new List<string>();
+            var rest = new List<string>();
+            foreach (string t0 in body.Split(new[] { ',', '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                (t0.TrimStart().StartsWith("leds=", StringComparison.OrdinalIgnoreCase) ? toks : rest).Add(t0);
+            toks.AddRange(rest);
+            foreach (string rawTok in toks)
             {
                 string tok = rawTok.Trim().ToLowerInvariant();
                 if (tok.Length == 0) continue;
@@ -50,7 +74,7 @@ namespace TizenAmbilight
                                  break;
                     case "rev":  if (dv == 0 || dv == 1) cfg.MapReverse = dv != 0; break;
                     case "test": if (dv == 0 || dv == 1) cfg.TestPattern = dv != 0; break;
-                    case "leds": if (iv >= 4 && iv <= WledOutput.MaxDrgbLeds) cfg.LedCount = iv; break;
+                    case "leds": if (iv >= 4 && iv <= WledOutput.MaxDrgbLeds) ApplyLedCount(cfg, iv); break;
                     // ---- tuning knobs, live. Lower alpha = MORE smoothing (longer EMA time constant).
                     case "alpha": if (dv >= 0.02 && dv <= 1.0) cfg.Alpha = dv; break;
                     case "gain":  if (dv >= 0.1 && dv <= 8.0) cfg.Gain = dv; break;

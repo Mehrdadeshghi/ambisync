@@ -32,6 +32,8 @@ bool pinSafe(int p);
 int defaultPin();
 void defaultRgbPins();
 void logTvDetails(bool force);
+static int tokenInt(const String &tokens, const char *key, int def);
+void sendBeacon();
 static String jget(const char *js, const char *key, const char *from);
 
 // ---- Protokoll im seriellen Monitor (115200 Baud): alles, was der ESP32 tut ----
@@ -97,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.0.9"
+#define FW_VERSION "1.1.0"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -111,6 +113,7 @@ static const int PORT_REALTIME = 21324;
 static const int PORT_DDP = 4048;
 static const int PORT_TVSTATUS = 21325;
 static const int PORT_DISCOVERY = 21326;   // TV-App sucht den ESP32 per Broadcast
+static const int PORT_BEACON = 21327;      // ESP32 meldet sich selbst (TV-App hört mit)
 // Fest eingebautes Heim-WLAN (optional). Wird benutzt, wenn keins gespeichert ist oder das
 // gespeicherte nicht erreichbar ist. Leer lassen = Einrichtung nur über die Webseite / den Monitor.
 #define WIFI_SSID_BUILTIN ""
@@ -136,7 +139,8 @@ struct Settings {
   int brightness = 255;       // 0..255
   int maxCurrent = 10000;     // mA, 0 = keine Begrenzung
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
-  int smoothing = 40;         // 0..95 %: Zwischenbilder weich überblenden
+  int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
+  int dither = 1;             // 1 = zeitliches Dithering (feinere dunkle Übergänge)
   int idleMode = 0;           // 0 aus, 1 feste Farbe
   uint32_t idleColor = 0x201000;
   int idleBrightness = 64;
@@ -172,6 +176,7 @@ void loadSettings() {
   { int v = prefs.getInt("maxmA", 10000); cfg.maxCurrent = v < 0 ? 0 : v; }
   cfg.mAPerChannel = constrain(prefs.getInt("mAch", 20), 1, 60);
   cfg.smoothing = constrain(prefs.getInt("smooth", 40), 0, 95);
+  cfg.dither = prefs.getInt("dither", 1) ? 1 : 0;
   cfg.idleMode = constrain(prefs.getInt("idle", 0), 0, 1);
   cfg.idleColor = prefs.getUInt("idleCol", 0x201000);
   cfg.idleBrightness = constrain(prefs.getInt("idleBri", 64), 0, 255);
@@ -196,6 +201,7 @@ void saveSettings() {
   prefs.putInt("maxmA", cfg.maxCurrent);
   prefs.putInt("mAch", cfg.mAPerChannel);
   prefs.putInt("smooth", cfg.smoothing);
+  prefs.putInt("dither", cfg.dither);
   prefs.putInt("idle", cfg.idleMode);
   prefs.putUInt("idleCol", cfg.idleColor);
   prefs.putInt("idleBri", cfg.idleBrightness);
@@ -243,6 +249,15 @@ int defaultPin() {
 static uint8_t target[MAX_LEDS * 3];
 static float outBuf[MAX_LEDS * 3];
 static portMUX_TYPE frameMux = portMUX_INITIALIZER_UNLOCKED;
+// Überblenden: jedes neue Bild vom Fernseher wird von "glideFrom" (was gerade zu sehen war) nach
+// "glideTo" übergeblendet, und zwar über die gemessene Zeit bis zum nächsten Bild. So läuft es bei
+// 25 Bildern/s genauso weich wie bei der langsamen Ersatz-Bildquelle (nur ~2 Bilder/s).
+static float glideFrom[MAX_LEDS * 3];
+static uint8_t glideTo[MAX_LEDS * 3];
+static float ditherAcc[MAX_LEDS * 3];       // Rest für das zeitliche Dithering (feinere dunkle Töne)
+static volatile float frameIntervalMs = 40;  // gemessener Abstand der TV-Bilder (gleitender Mittelwert)
+static volatile float glideMsNow = 40;       // aktuelle Überblendzeit (für die Statusseite)
+static std::atomic<uint32_t> sceneCuts{0};
 
 static volatile uint32_t lastRealtimeMs = 0;     // 0 = noch nie
 static volatile uint32_t realtimeTimeoutMs = 0;  // 0 = nie ablaufen
@@ -551,8 +566,8 @@ void onDiscovery(AsyncUDPPacket &pkt) {
   static const char Q[] = "AMBISYNC-DISCOVER";
   if (pkt.length() < sizeof(Q) - 1 || memcmp(pkt.data(), Q, sizeof(Q) - 1) != 0) return;
   if (!sourceAllowed(pkt.remoteIP())) return;
-  char reply[64];
-  int n = snprintf(reply, sizeof(reply), "AMBISYNC 1 leds=%d port=%d", cfg.ledCount, PORT_REALTIME);
+  char reply[96];
+  int n = snprintf(reply, sizeof(reply), "AMBISYNC 1 leds=%d port=%d fw=%s", cfg.ledCount, PORT_REALTIME, FW_VERSION);
   pkt.write((const uint8_t *)reply, n);
   discIp = (uint32_t)pkt.remoteIP();
   discCount++;
@@ -566,6 +581,8 @@ void renderTask(void *) {
   const uint32_t periodMs = 16;  // ~60 Bilder/s
   uint32_t fpsT0 = millis(), fpsN = 0, rtN0 = 0;
   float idleFade = 0;            // 0 = Echtzeit, 1 = Leerlauf (für weiches Ausblenden)
+  uint32_t lastFrameSeen = 0, lastFrameAt = 0;
+  float glideP = 1.0f, glideE = 1.0f, glideMs = 40.0f;
   for (;;) {
     uint32_t t0 = millis();
     if (ledReinit) {
@@ -575,7 +592,8 @@ void renderTask(void *) {
       ledInit();
       memset(frame, 0, sizeof(frame));
       int keep = rmtLeds; rmtLeds = MAX_LEDS; ledShow(frame); rmtLeds = keep;   // auch LEDs hinter dem neuen Ende aus
-      for (int i = 0; i < MAX_LEDS * 3; i++) outBuf[i] = 0;
+      for (int i = 0; i < MAX_LEDS * 3; i++) { outBuf[i] = 0; glideFrom[i] = 0; ditherAcc[i] = 0; }
+      memset(glideTo, 0, sizeof(glideTo));
     }
     int n = rmtLeds;
 
@@ -586,7 +604,8 @@ void renderTask(void *) {
     int tm = testMode;
     if (tm != TEST_NONE && testUntilMs && (int32_t)(t0 - testUntilMs) > 0) { testMode = TEST_NONE; tm = TEST_NONE; }
 
-    uint8_t want[MAX_LEDS * 3];
+    static uint8_t want[MAX_LEDS * 3];
+    static float wantF[MAX_LEDS * 3];
     if (tm != TEST_NONE) {
       for (int i = 0; i < n; i++) {
         uint32_t c = 0;
@@ -601,6 +620,7 @@ void renderTask(void *) {
           default: c = 0; break;
         }
         want[i * 3] = c >> 16; want[i * 3 + 1] = (c >> 8) & 0xFF; want[i * 3 + 2] = c & 0xFF;
+        for (int ch = 0; ch < 3; ch++) wantF[i * 3 + ch] = want[i * 3 + ch];
       }
       idleFade = 0;
     } else {
@@ -608,43 +628,83 @@ void renderTask(void *) {
       uint8_t ir = (cfg.idleColor >> 16) & 0xFF, ig = (cfg.idleColor >> 8) & 0xFF, ib = cfg.idleColor & 0xFF;
       if (cfg.idleMode == 0) { ir = ig = ib = 0; }
       else { ir = ir * cfg.idleBrightness / 255; ig = ig * cfg.idleBrightness / 255; ib = ib * cfg.idleBrightness / 255; }
-      portENTER_CRITICAL(&frameMux);
-      memcpy(want, target, n * 3);
-      portEXIT_CRITICAL(&frameMux);
+      // ---- neues Bild vom Fernseher? Dann von dem aus überblenden, was gerade zu sehen ist ----
+      uint32_t fr = rtFrames;
+      if (fr != lastFrameSeen) {
+        lastFrameSeen = fr;
+        uint32_t gap = t0 - lastFrameAt;
+        if (lastFrameAt != 0 && gap >= 8 && gap < 1500) frameIntervalMs += ((float)gap - frameIntervalMs) * 0.2f;
+        lastFrameAt = t0;
+        for (int i = 0; i < n * 3; i++) glideFrom[i] = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;   // Stand jetzt
+        portENTER_CRITICAL(&frameMux);
+        memcpy(glideTo, target, n * 3);
+        portEXIT_CRITICAL(&frameMux);
+        // Szenenwechsel: große mittlere Änderung -> kurz statt über das ganze Intervall überblenden
+        uint32_t diff = 0;
+        for (int i = 0; i < n * 3; i++) diff += (uint32_t)fabsf(glideTo[i] - glideFrom[i]);
+        float meanDiff = n ? (float)diff / (n * 3) : 0;
+        float iv = constrain(frameIntervalMs, 16.0f, 1000.0f);
+        float g = iv * (cfg.smoothing / 40.0f);              // Standard 40 % = genau ein Bildabstand
+        if (meanDiff > 40.0f) { g = min(g, 60.0f); sceneCuts++; }
+        glideMs = g;
+        glideMsNow = g;
+      }
+      glideP = glideMs <= 1.0f ? 1.0f : min(1.0f, (float)(t0 - lastFrameAt) / glideMs);
+      // bei vielen Bildern/s linear (gleichmäßige Bewegung), bei wenigen weich anfahren und abbremsen
+      glideE = frameIntervalMs < 100.0f ? glideP : glideP * glideP * (3.0f - 2.0f * glideP);
+      for (int i = 0; i < n * 3; i++) {
+        float v = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;
+        want[i] = (uint8_t)(v + 0.5f);
+        wantF[i] = v;
+      }
       for (int i = 0; i < n; i++) {
-        want[i * 3] = want[i * 3] * (1 - idleFade) + ir * idleFade;
-        want[i * 3 + 1] = want[i * 3 + 1] * (1 - idleFade) + ig * idleFade;
-        want[i * 3 + 2] = want[i * 3 + 2] * (1 - idleFade) + ib * idleFade;
+        wantF[i * 3] = wantF[i * 3] * (1 - idleFade) + ir * idleFade;
+        wantF[i * 3 + 1] = wantF[i * 3 + 1] * (1 - idleFade) + ig * idleFade;
+        wantF[i * 3 + 2] = wantF[i * 3 + 2] * (1 - idleFade) + ib * idleFade;
+        for (int c = 0; c < 3; c++) want[i * 3 + c] = (uint8_t)(wantF[i * 3 + c] + 0.5f);
       }
       if (idleFade > 0.995f) {  // ganz im Leerlauf: alten Echtzeit-Rest vergessen
         portENTER_CRITICAL(&frameMux);
         memset(target, 0, sizeof(target));
         portEXIT_CRITICAL(&frameMux);
+        memset(glideTo, 0, sizeof(glideTo));
+        for (int i = 0; i < MAX_LEDS * 3; i++) glideFrom[i] = 0;
+        glideP = 1.0f; glideE = 1.0f;
       }
     }
 
     memcpy(viewWant, want, n * 3);
 
-    // ---- weich nachführen (Zwischenbilder zwischen den ~25 TV-Bildern/s) ----
-    float k = (tm != TEST_NONE) ? 1.0f : (1.0f - cfg.smoothing / 100.0f);
-    if (k < 0.05f) k = 0.05f;
-    for (int i = 0; i < n * 3; i++) outBuf[i] += (want[i] - outBuf[i]) * k;
+    // ---- Ausgabe: Überblenden passiert oben, hier nur noch ein Hauch Glättung gegen Paket-Zittern ----
+    float k = (tm != TEST_NONE) ? 1.0f : 0.85f;
+    for (int i = 0; i < n * 3; i++) outBuf[i] += (wantF[i] - outBuf[i]) * k;
 
-    // ---- Helligkeit + Strombegrenzung ----
-    uint32_t sum = 0;
-    for (int i = 0; i < n * 3; i++) {
-      int v = (int)(outBuf[i] + 0.5f) * cfg.brightness / 255;
-      frame[i] = v;
-      sum += v;
-    }
-    int mA = (int)((uint64_t)sum * cfg.mAPerChannel / 255) + n;  // + ~1 mA Ruhestrom je LED
+    // ---- Helligkeit + Strombegrenzung (in Kommazahlen, damit dunkle Töne nicht stufig werden) ----
+    float bscale = cfg.brightness / 255.0f;
+    float sumF = 0;
+    for (int i = 0; i < n * 3; i++) sumF += outBuf[i] * bscale;
+    int mA = (int)(sumF * cfg.mAPerChannel / 255.0f) + n;  // + ~1 mA Ruhestrom je LED
     estCurrent = mA;
     limiting = false;
     if (cfg.maxCurrent > 0 && mA > cfg.maxCurrent) {
       float s = (float)(cfg.maxCurrent - n) / max(1, mA - n);
       if (s < 0) s = 0;
-      for (int i = 0; i < n * 3; i++) frame[i] = frame[i] * s;
+      bscale *= s;
       limiting = true;
+    }
+    // zeitliches Dithering: der Nachkommarest wird ins nächste Bild mitgenommen. Bei 60 Bildern/s
+    // ergibt das Zwischenstufen, die ein 8-Bit-Streifen allein nicht kann (weiche dunkle Übergänge).
+    bool dith = cfg.dither && !analogOn && tm == TEST_NONE;
+    for (int i = 0; i < n * 3; i++) {
+      float v = outBuf[i] * bscale;
+      if (v < 0) v = 0; else if (v > 255) v = 255;
+      int o;
+      if (dith && v > 0.05f) {
+        float a = v + ditherAcc[i];
+        o = (int)a; if (o > 255) o = 255;
+        ditherAcc[i] = a - o;
+      } else { o = (int)(v + 0.5f); ditherAcc[i] = 0; }
+      frame[i] = (uint8_t)o;
     }
 
     ledShow(frame);
@@ -766,7 +826,10 @@ void handleStatus() {
        ",\"rejected\":" + String((uint32_t)rtRejected) +
        ",\"proto\":\"" + String(rtProtocol) + "\"" +
        ",\"source\":\"" + (lastRealtimeMs ? IPAddress(rtSourceIp).toString() : String("")) + "\"" +
-       ",\"ageMs\":" + String(rtAge) + "},";
+       ",\"ageMs\":" + String(rtAge) +
+       ",\"intervalMs\":" + String(frameIntervalMs, 0) +
+       ",\"glideMs\":" + String(glideMsNow, 0) +
+       ",\"cuts\":" + String((uint32_t)sceneCuts) + "},";
   j += "\"current\":" + String(estCurrent) + ",";
   j += "\"limiting\":" + String(limiting ? "true" : "false") + ",";
   j += "\"test\":" + String(testMode) + ",";
@@ -797,6 +860,7 @@ void handleGetConfig() {
   j += "\"maxmA\":" + String(cfg.maxCurrent) + ",";
   j += "\"mAch\":" + String(cfg.mAPerChannel) + ",";
   j += "\"smooth\":" + String(cfg.smoothing) + ",";
+  j += "\"dither\":" + String(cfg.dither) + ",";
   j += "\"idle\":" + String(cfg.idleMode) + ",";
   char col[8]; snprintf(col, sizeof(col), "#%06X", (unsigned)(cfg.idleColor & 0xFFFFFF));
   j += "\"idleCol\":\"" + String(col) + "\",";
@@ -849,6 +913,7 @@ void handleSetConfig() {
   cfg.maxCurrent = argInt("maxmA", cfg.maxCurrent, 0, 100000);
   cfg.mAPerChannel = argInt("mAch", cfg.mAPerChannel, 1, 60);
   cfg.smoothing = argInt("smooth", cfg.smoothing, 0, 95);
+  cfg.dither = argInt("dither", cfg.dither, 0, 1);
   cfg.idleMode = argInt("idle", cfg.idleMode, 0, 1);
   if (server.hasArg("idleCol")) {
     String c = server.arg("idleCol"); c.replace("#", "");
@@ -896,6 +961,8 @@ void handleTest() {
 void handleTvControl() {
   if (!sourceAllowed(server.client().remoteIP()) && cfg.allowIp.length()) { server.send(403, "text/plain", ""); return; }
   String body = cfg.tvTokens;
+  // Plug & Play: die TV-App übernimmt die LED-Anzahl sofort, ohne Neustart (außer sie ist dort fest eingestellt)
+  if (cfg.stripType == 0 && tokenInt(cfg.tvTokens, "leds", -1) < 0) body = body.length() ? body + ",leds=" + String(cfg.ledCount) : "leds=" + String(cfg.ledCount);
   if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
   server.send(200, "text/plain", body);
 }
@@ -1415,6 +1482,25 @@ void setup() {
   if (!apMode && cfg.adminPass.length() == 0) LOG("WARNUNG: kein Admin-Passwort gesetzt – im Monitor: admin <passwort>");
 }
 
+// Plug & Play: der ESP32 meldet sich selbst im Netz. Die TV-App muss ihn dann nicht erst suchen und
+// findet ihn auch, wenn der Router ihre Such-Broadcasts nicht weiterleitet. Solange kein Fernseher
+// verbunden ist alle 2 s, danach nur noch alle 30 s.
+void sendBeacon() {
+  static uint32_t last = 0;
+  if (apMode || WiFi.status() != WL_CONNECTED) return;
+  uint32_t now = millis();
+  bool tvActive = tvStatusMs && (now - tvStatusMs) < 6000;
+  if (now - last < (tvActive ? 30000UL : 2000UL)) return;
+  last = now;
+  char msg[96];
+  int n = snprintf(msg, sizeof(msg), "AMBISYNC 1 leds=%d port=%d fw=%s", cfg.ledCount, PORT_REALTIME, FW_VERSION);
+  udpDisc.broadcastTo((uint8_t *)msg, n, PORT_BEACON);
+  // zusätzlich an die Broadcast-Adresse des eigenen Netzes (manche Router leiten 255.255.255.255 nicht ins LAN)
+  IPAddress ip = WiFi.localIP(), mask = WiFi.subnetMask();
+  IPAddress bc((uint32_t)ip | ~(uint32_t)mask);
+  udpDisc.writeTo((uint8_t *)msg, n, bc, PORT_BEACON);
+}
+
 void loop() {
   handleSerial();
   logEvents();
@@ -1432,6 +1518,7 @@ void loop() {
     }
   }
   server.handleClient();
+  sendBeacon();
   // WLAN weg? Nach 60 s ohne Verbindung neu starten (Einstellungen bleiben erhalten).
   // Zusätzlich selbst neu verbinden: Der Core verbindet nach manchen Fehlern (z. B. Grund 34) nicht zuverlässig neu.
   static uint32_t lostSince = 0, lastKick = 0;

@@ -74,13 +74,16 @@ namespace TizenAmbilight
 
         static Thread _thread;
         static string _dir;
-        static int _zoneCount;
+        static volatile int _zoneCount;
         static double _bandFrac;
 
         public static string ModeName(int m)
         {
             return m == ModeOff ? "off" : m == ModeAlpha ? "alpha" : m == ModeNonBlack ? "nonblack" : "auto";
         }
+
+        /// <summary>Neue Zonenzahl (LED-Anzahl am ESP32 geändert); der Sampler baut seine Zonen selbst neu.</summary>
+        public static void SetZoneCount(int zoneCount) { if (zoneCount >= 4) _zoneCount = zoneCount; }
 
         /// <summary>Startet den Sampler-Thread (einmalig).</summary>
         public static void Start(string captureDir, int zoneCount, double bandFrac)

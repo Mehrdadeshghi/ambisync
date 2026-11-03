@@ -36,6 +36,11 @@ code{background:#0f1218;padding:1px 5px;border-radius:5px}
 .chan .bar{height:8px;border-radius:4px;background:#222833;margin-top:6px;overflow:hidden}.chan .bar i{display:block;height:100%;width:0}
 .swatch{display:inline-block;width:14px;height:14px;border-radius:4px;vertical-align:-2px;margin-right:6px;border:1px solid #fff3}
 pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;padding:8px;font:11px/1.4 ui-monospace,Consolas,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
+.wiz{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:16px;align-items:start}
+@media(max-width:700px){.wiz{grid-template-columns:1fr}}
+.wiz svg{width:100%;height:auto;display:block;border-radius:10px;background:#07080b}
+.pick{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.pick button{margin:0;background:#2a3140}.pick button.on{background:var(--acc)}
+.wizres{margin-top:12px;padding:10px 12px;border-radius:8px;background:#0f1218;border:1px solid var(--line);font-size:14px}
 </style></head><body>
 <header><h1>AmbiSync</h1><small id="hdr">verbinde …</small></header>
 <main>
@@ -81,6 +86,31 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="lvinfo" id="lvInfo">lädt …</div>
 <div id="lvRgb" style="display:none"><div class="chans" id="lvChans"></div></div>
 <div class="hint">Innen: die Farben an den Bildrändern, wie sie vom Fernseher beim ESP32 ankommen. Außen: was der LED-Streifen gerade wirklich leuchtet (mit Helligkeit und Strombegrenzung). <b>1</b> und <b>2</b> markieren die ersten beiden LEDs, also Anfang und Laufrichtung.</div>
+</section>
+
+<section class="full" id="wizSec">
+<h2>Einbau-Assistent: wo beginnt dein LED-Streifen?</h2>
+<div class="wiz">
+<div>
+<div class="hint">Stell dich <b>vor</b> den Fernseher (von hinten sind links und rechts vertauscht). Der Anfang ist das Ende mit dem Kabel zum ESP32, der Pfeil auf dem Streifen zeigt vom Anfang weg.</div>
+<label class="step">1. Wo ist der Anfang? (im Bild antippen)</label>
+<div class="pick" id="wzCorner">
+<button data-c="bl">unten links</button><button data-c="bm">unten Mitte</button><button data-c="br">unten rechts</button><button data-c="tl">oben links</button><button data-c="tr">oben rechts</button>
+</div>
+<label class="step">2. In welche Richtung läuft er von dort?</label>
+<div class="pick" id="wzDir"></div>
+<div class="wizres" id="wzRes">Bitte Anfang und Richtung wählen.</div>
+<div class="btns"><button id="wzApply" onclick="wzApply()" disabled>Übernehmen</button><button class="sec" onclick="wzCheck()">Am Fernseher prüfen</button><button class="sec" onclick="test('edges')">Nur am Streifen prüfen</button></div>
+<div class="hint">„Am Fernseher prüfen“ zeigt 60 s lang ein Testbild über den Fernseher: oben <b style="color:#ff5a5a">rot</b>, rechts <b style="color:#3fdc6a">grün</b>, unten <b style="color:#6b8cff">blau</b>, links <b style="color:#ffd23f">gelb</b>. Passt eine Seite nicht, den anderen Anfang oder die andere Richtung wählen.</div>
+</div>
+<svg id="wzSvg" viewBox="0 0 400 260" role="img" aria-label="Fernseher von vorne mit Startpunkt und Laufrichtung des Streifens">
+<rect x="60" y="40" width="280" height="158" rx="6" fill="#0b0d12" stroke="#3a4252" stroke-width="2"/>
+<text x="200" y="124" text-anchor="middle" fill="#8b93a3" font-size="13">Fernseher von vorne</text>
+<rect x="185" y="198" width="30" height="10" fill="#1a1d24"/><rect x="160" y="208" width="80" height="6" rx="2" fill="#1a1d24"/>
+<rect x="44" y="24" width="312" height="190" rx="10" fill="none" stroke="#2a2f3a" stroke-width="8"/>
+<g id="wzDots"></g><g id="wzArrow"></g>
+</svg>
+</div>
 </section>
 
 <section>
@@ -139,6 +169,8 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div><label>mA pro Farbkanal</label><input id="mAch" type="number" min="1" max="60"></div></div>
 <div class="hint">Strombegrenzung schützt Netzteil und Streifen: z. B. 5-V-Netzteil mit 15 A → 13000 mA eintragen.</div>
 <label>Weiche Übergänge <span id="smV"></span></label><input id="smooth" type="range" min="0" max="95" oninput="smV.textContent=this.value+' %'">
+<div class="hint">40 % = die LEDs gleiten genau im Takt der Bilder vom Fernseher (empfohlen). Weniger = direkter, mehr = ruhiger. Szenenwechsel springen immer sofort.</div>
+<label>Feine dunkle Übergänge (Dithering)</label><select id="dither"><option value="1">an (empfohlen)</option><option value="0">aus</option></select>
 <label>Wenn der Fernseher nichts sendet</label><select id="idle"><option value="0">LEDs aus</option><option value="1">feste Farbe</option></select>
 <div class="row"><div><label>Farbe</label><input id="idleCol" type="color"></div>
 <div><label>Helligkeit</label><input id="idleBri" type="range" min="0" max="255"></div></div>
@@ -202,7 +234,7 @@ async function refresh(){
   const tvOk=s.tvAgeMs>=0&&s.tvAgeMs<6000;
   $('sTv').innerHTML=tvOk?dot('ok')+'verbunden ('+esc(s.tvIp)+')':(s.tvAgeMs<0?dot('')+'noch nie gemeldet':dot('warn')+'seit '+Math.round(s.tvAgeMs/1000)+' s still');
   $('sSrc').innerHTML=s.rt.active?dot('ok')+esc(s.rt.proto)+' von '+esc(s.rt.source):dot('')+'keine'+(s.rt.rejected?' ('+s.rt.rejected+' abgelehnt)':'');
-  $('sRt').textContent=(Number(s.rt.fps)||0).toFixed(1);
+  $('sRt').textContent=(Number(s.rt.fps)||0).toFixed(1)+(s.rt.active&&s.rt.glideMs!=null?' · gleitet '+s.rt.glideMs+' ms':'');
   $('sOut').innerHTML=(s.ledOk?dot('ok'):dot('bad')+'Fehler · ')+(s.type==1?'RGB-Streifen (eine Farbe)':s.leds+' LEDs an GPIO '+s.pin)+' · '+s.outFps.toFixed(0)+' Bilder/s';
   $('sCur').innerHTML=(s.limiting?dot('warn'):'')+(s.current/1000).toFixed(2)+' A'+(s.limiting?' (begrenzt)':'');
   $('sWifi').textContent=s.ap?'Einrichtungs-WLAN':s.rssi+' dBm';
@@ -221,7 +253,7 @@ async function refresh(){
 async function loadCfg(){
  const r=await fetch('/api/config',{headers:H});if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
+ ['pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
@@ -229,8 +261,8 @@ async function loadCfg(){
  (c.tv||'').split(',').filter(Boolean).forEach(p=>{const i=p.indexOf('=');const k=p.slice(0,i),v=p.slice(i+1);if(TVKEYS.includes(k))tv[k]=v;else extra.push(p)});
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
 }
-function typeUi(){const a=$('type').value==='1';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
-function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'none':'';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
+function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}
@@ -321,6 +353,36 @@ function lvWhy(d){if(d.test)return['Testbild läuft',''];
  else if(/paused/.test(st))b='Aufnahme pausiert (Steuerkanal)';
  else b=st.slice(0,70);
  return[a,b]}
+
+// ---- Einbau-Assistent ----
+// Die TV-App verteilt die Zonen im Uhrzeigersinn (von vorne): oben links->rechts, rechts runter,
+// unten rechts->links, links hoch. Aus Anfang + Richtung ergeben sich "map" und "rev".
+const WZ={c:'',d:'',P:{tl:[44,24],tr:[356,24],br:[356,214],bl:[44,214],bm:[200,214]},
+ DIRS:{tl:[['cw','nach rechts'],['ccw','nach unten']],tr:[['cw','nach unten'],['ccw','nach links']],br:[['cw','nach links'],['ccw','nach oben']],bl:[['cw','nach oben'],['ccw','nach rechts']],bm:[['cw','nach links'],['ccw','nach rechts']]},
+ V:{'nach rechts':[1,0],'nach links':[-1,0],'nach oben':[0,-1],'nach unten':[0,1]}};
+function wzZones(){return Math.max(4,Number($('leds').value)||60)}
+function wzCalc(){const Z=wzZones();const W=16,Hh=9,P=2*W+2*Hh;let l=Math.max(1,Math.round(Z*Hh/P)),t=Math.max(1,Math.round(Z*W/P)),r=l,b=t;
+ const c=[l,t,r,b];let s=l+t+r+b;while(s<Z){c[3]++;s++}while(s>Z&&c[3]>1){c[3]--;s--}
+ const [L,T,R,B]=c;const idx={tl:0,tr:T,br:T+R,bl:T+R+B,bm:T+R+Math.floor(B/2)}[WZ.c];
+ if(WZ.d==='cw')return{map:idx%Z,rev:0,L,T,R,B};return{map:(idx-1+Z)%Z,rev:1,L,T,R,B}}
+function wzDraw(){const dots=$('wzDots');dots.innerHTML='';
+ for(const k in WZ.P){const [x,y]=WZ.P[k];const c=svgEl('circle',{cx:x,cy:y,r:k===WZ.c?11:8,fill:k===WZ.c?'#5b8cff':'#3a4252',stroke:'#0b0d12','stroke-width':2,style:'cursor:pointer'},dots);c.onclick=()=>wzCorner(k)}
+ const a=$('wzArrow');a.innerHTML='';
+ if(WZ.c&&WZ.d){const lab=WZ.DIRS[WZ.c].find(x=>x[0]===WZ.d)[1],[dx,dy]=WZ.V[lab],[x,y]=WZ.P[WZ.c],x2=x+dx*70,y2=y+dy*55;
+  svgEl('line',{x1:x,y1:y,x2:x2,y2:y2,stroke:'#3fbf7f','stroke-width':5,'stroke-linecap':'round'},a);
+  const ang=Math.atan2(dy,dx),hx2=x2+Math.cos(ang)*10,hy2=y2+Math.sin(ang)*10;
+  svgEl('polygon',{points:[hx2,hy2,x2+Math.cos(ang+2.5)*12,y2+Math.sin(ang+2.5)*12,x2+Math.cos(ang-2.5)*12,y2+Math.sin(ang-2.5)*12].join(','),fill:'#3fbf7f'},a);
+  const t=svgEl('text',{x:x+dx*14+(dy?16:0),y:y+dy*14+(dx?-14:5),fill:'#e9ecf1','font-size':13,'font-weight':600},a);t.textContent='Anfang'}}
+function wzCorner(c){WZ.c=c;WZ.d='';$('wzDir').innerHTML=WZ.DIRS[c].map(x=>'<button data-d="'+x[0]+'">'+x[1]+'</button>').join('');
+ document.querySelectorAll('#wzCorner button').forEach(b=>b.classList.toggle('on',b.dataset.c===c));wzShow()}
+function wzShow(){document.querySelectorAll('#wzDir button').forEach(b=>b.classList.toggle('on',b.dataset.d===WZ.d));wzDraw();
+ if(!WZ.c||!WZ.d){$('wzRes').textContent=WZ.c?'Jetzt die Richtung wählen.':'Bitte Anfang und Richtung wählen.';$('wzApply').disabled=true;return}
+ const r=wzCalc();$('wzRes').innerHTML='Bei '+wzZones()+' LEDs verteilt der Fernseher etwa <b>'+r.T+'</b> oben, <b>'+r.R+'</b> rechts, <b>'+r.B+'</b> unten, <b>'+r.L+'</b> links.<br>Einstellung: Start-LED <b>'+r.map+'</b>, Richtung umkehren <b>'+(r.rev?'ja':'nein')+'</b>.';$('wzApply').disabled=false}
+$('wzCorner').onclick=e=>{const c=e.target.dataset&&e.target.dataset.c;if(c)wzCorner(c)};
+$('wzDir').onclick=e=>{const d=e.target.dataset&&e.target.dataset.d;if(d){WZ.d=d;wzShow()}};
+function wzApply(){const r=wzCalc();$('t_map').value=r.map;$('t_rev').value=String(r.rev);saveTv()}
+function wzCheck(){$('t_test').value='1';saveTv();setTimeout(()=>{$('t_test').value='';saveTv()},60000)}
+wzDraw();
 let lvT=0;async function lvTick(){clearTimeout(lvT);if(document.visibilityState==='visible'){try{const r=await fetch('/api/leds',{cache:'no-store'});if(r.ok)lvDraw(await r.json())}catch(e){}}lvT=setTimeout(lvTick,150)}
 lvTick();
 refresh();loadCfg().then(()=>{});setInterval(refresh,1500);

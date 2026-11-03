@@ -59,6 +59,15 @@ Die Weboberfläche des ESP32 zeigt unter „Fernseher-App“, was auf dem Fernse
 
 Ist das Heim-WLAN beim Einschalten nicht erreichbar, etwa weil der Router nach einem Stromausfall noch startet, öffnet der ESP32 zusätzlich das Einrichtungs-WLAN, versucht aber weiter das Heim-WLAN und wechselt von selbst zurück. Auch im Einrichtungsmodus gilt dann das Admin-Passwort.
 
+## Plug & Play (ab Firmware 1.1.0 / TV-App 1.1.0)
+
+- **Finden sich selbst:** Der ESP32 meldet sich alle 2 s im Netz (UDP-Port 21327), solange kein Fernseher verbunden ist. Die TV-App hört mit, fragt zusätzlich per Broadcast (an 255.255.255.255 und an die Broadcast-Adresse jedes eigenen Netzes) und merkt sich die gefundene Adresse. Nach einem TV-Neustart ist die Verbindung damit sofort wieder da. Bekommt der ESP32 eine neue IP, zieht die App nach etwa 3 s mit.
+- **LED-Anzahl live:** Änderst du am ESP32 die Anzahl der LEDs, teilt die TV-App ihre Zonen sofort neu auf, ohne Neustart.
+- **Einbau-Assistent:** In der Weboberfläche Anfang und Laufrichtung des Streifens antippen (von vorne gesehen). Der ESP32 rechnet daraus „Start-LED“ und „Richtung umkehren“ aus und schickt beides an den Fernseher. „Am Fernseher prüfen“ zeigt das Kanten-Testbild.
+- **Flüssig:** Der ESP32 misst, wie oft der Fernseher Bilder schickt, und blendet genau über diese Zeit zum nächsten Bild über (bei 25 Bildern/s gleichmäßig, bei der langsamen Samsung-Farbmessung weich an- und abbremsend). Szenenwechsel springen sofort. Zeitliches Dithering macht dunkle Übergänge feiner, als 8 Bit allein können.
+
+Ports: 21324 Farben (WLED DRGB/DNRGB/WARLS), 4048 DDP, 21325 Status der TV-App, 21326 Suche, 21327 Selbstmeldung des ESP32.
+
 ## 4. TV-App bauen
 
 Der Ordner liegt in einem (privaten) GitHub-Repo. Bei jedem Push baut GitHub die App: unter **Actions → Build → Artifacts** findest du `AmbiSync-tv-app`. Bei einem Tag `v1.0.0` entsteht zusätzlich ein **Release**.
