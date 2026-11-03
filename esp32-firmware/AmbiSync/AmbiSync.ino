@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.2"
+#define FW_VERSION "1.2.3"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -997,6 +997,11 @@ void handleTvControl() {
     float a = constrain(0.9f - cfg.smoothing / 100.0f, 0.15f, 0.9f);
     body = body.length() ? body + ",alpha=" + String(a, 2) : "alpha=" + String(a, 2);
   }
+  // Ersatz-Bildquelle (Samsung-Farbmessung, bei DRM-Inhalten): ab Werk 24 Messpunkte nacheinander mit je
+  // 40 ms Wartezeit -> jeder Punkt nur ~1x pro Sekunde neu, die LEDs springen dann im Sekundentakt.
+  // 12 Punkte mit 20 ms (eine Bildwechselzeit) sind ~4x schneller; die App verteilt sie auf alle LEDs.
+  if (tokenInt(cfg.tvTokens, "pz", -1) < 0) body = body.length() ? body + ",pz=12" : String("pz=12");
+  if (tokenInt(cfg.tvTokens, "psleep", -99) == -99) body = body.length() ? body + ",psleep=20" : String("psleep=20");
   if (tokenInt(cfg.tvTokens, "stale", -1) < 0) body = body.length() ? body + ",stale=60000" : String("stale=60000");
   if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
   else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");

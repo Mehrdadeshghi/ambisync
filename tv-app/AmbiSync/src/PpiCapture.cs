@@ -244,7 +244,7 @@ namespace TizenAmbilight
         public static bool Running { get { return _wantRun; } }
 
         // pz: number of positions measured round the perimeter (control token pz)
-        static volatile int _pzReq = 24;
+        static volatile int _pzReq = 12;
         public static int PzRequested { get { return _pzReq; } set { _pzReq = Math.Max(4, value); } }
         static volatile int _pz;
         static volatile bool _rebuild = true;

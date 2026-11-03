@@ -333,7 +333,7 @@ namespace TizenAmbilight
             // ppi_ve fallback tunables (only used while the plane is DRM-withheld, or with captureBackend "ppi").
             // pz: positions measured round the ring. More = finer picture, slower per-zone refresh.
             // ppiSettleMs: -1 = the settle time the TV reports (default); >=0 overrides it.
-            PpiCapture.PzRequested = Math.Max(4, Math.Min(73, PrefInt("ppiZones", 24)));
+            PpiCapture.PzRequested = Math.Max(4, Math.Min(73, PrefInt("ppiZones", 12)));   // AmbiSync: 24 Punkte = nur ~1 Messung/s je Punkt
             PpiCapture.SleepOverrideMs = Math.Max(-1, Math.Min(200, PrefInt("ppiSettleMs", -1)));
             c.RequestWidth = PrefInt("requestWidth", CaptureApi.RequestWidth);
             if (c.RequestWidth < 16) c.RequestWidth = 16;
