@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.2.1 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.2.2 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration

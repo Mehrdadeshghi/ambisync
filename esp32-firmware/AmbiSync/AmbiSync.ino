@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.1"
+#define FW_VERSION "1.2.2"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -653,6 +653,9 @@ void renderTask(void *) {
         float meanDiff = n ? (float)diff / (n * 3) : 0;
         float iv = constrain(frameIntervalMs, 16.0f, 1000.0f);
         float g = iv * (cfg.smoothing / 40.0f);              // Standard 40 % = genau ein Bildabstand
+        // Obergrenze, damit langsame Bildquellen (Samsung-Farbmessung, schwaches WLAN) keine spürbare
+        // Verzögerung bekommen: Standard 40 % -> höchstens 160 ms
+        g = min(g, 40.0f + cfg.smoothing * 3.0f);
         if (meanDiff > 40.0f) { g = min(g, 60.0f); sceneCuts++; }
         glideMs = g;
         glideMsNow = g;
@@ -988,6 +991,12 @@ void handleTvControl() {
   if (cfg.stripType == 0 && tokenInt(cfg.tvTokens, "leds", -1) < 0) body = body.length() ? body + ",leds=" + String(cfg.ledCount) : "leds=" + String(cfg.ledCount);
   // Die TV-App dimmt ab Werk nach 6 s ohne Bildänderung auf 35 % und springt bei jeder kleinen Änderung
   // zurück: ruhige Szenen "atmen". Erst nach 60 s Standbild (Pause, geschlossenes Video) abdunkeln.
+  // Reaktion der TV-App (alpha) folgt dem Regler "Weiche Übergänge": Standard 40 % -> alpha 0.5.
+  // Die App-Vorgabe 0.25 hinkte bei normalen Farbwechseln eine halbe Sekunde hinterher.
+  if ((String(",") + cfg.tvTokens + ",").indexOf(",alpha=") < 0) {
+    float a = constrain(0.9f - cfg.smoothing / 100.0f, 0.15f, 0.9f);
+    body = body.length() ? body + ",alpha=" + String(a, 2) : "alpha=" + String(a, 2);
+  }
   if (tokenInt(cfg.tvTokens, "stale", -1) < 0) body = body.length() ? body + ",stale=60000" : String("stale=60000");
   if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
   else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");

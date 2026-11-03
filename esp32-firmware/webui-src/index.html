@@ -185,7 +185,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div><label>mA pro Farbkanal</label><input id="mAch" type="number" min="1" max="60"></div></div>
 <div class="hint">Strombegrenzung schützt Netzteil und Streifen: z. B. 5-V-Netzteil mit 15 A → 13000 mA eintragen.</div>
 <label>Weiche Übergänge <span id="smV"></span></label><input id="smooth" type="range" min="0" max="95" oninput="smV.textContent=this.value+' %'">
-<div class="hint">40 % = die LEDs gleiten genau im Takt der Bilder vom Fernseher (empfohlen). Weniger = direkter, mehr = ruhiger. Szenenwechsel springen immer sofort.</div>
+<div class="hint">Regelt, wie schnell die LEDs dem Bild folgen. 40 % = schnell und trotzdem weich (empfohlen), 0 % = sofort, mehr = ruhiger, aber mit Verzögerung. Szenenwechsel springen immer sofort.</div>
 <label>Feine dunkle Übergänge (Dithering)</label><select id="dither"><option value="1">an (empfohlen)</option><option value="0">aus</option></select>
 <label>Wenn der Fernseher nichts sendet</label><select id="idle"><option value="0">LEDs aus</option><option value="1">feste Farbe</option></select>
 <div class="row"><div><label>Farbe</label><input id="idleCol" type="color"></div>
@@ -200,7 +200,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <select id="t_ui"><option value="">Standard (automatisch)</option><option value="1">automatisch</option><option value="2">Transparenz-Modus</option><option value="3">Dunkel-Modus</option><option value="0">aus (nur Video)</option></select>
 <div class="row"><div><label>Helligkeit (gain, Std. 1.0)</label><input id="t_gain" type="number" step="0.05" min="0.1" max="8"></div>
 <div><label>Sättigung (Std. 1.0)</label><input id="t_sat" type="number" step="0.05" min="0" max="4"></div></div>
-<div class="row"><div><label>Reaktion (alpha, Std. 0.25)</label><input id="t_alpha" type="number" step="0.01" min="0.02" max="1"></div>
+<div class="row"><div><label>Reaktion (alpha, leer = folgt „Weiche Übergänge“)</label><input id="t_alpha" type="number" step="0.01" min="0.02" max="1"></div>
 <div><label>Grundlicht (floor, Std. 0)</label><input id="t_floor" type="number" step="1" min="0" max="255"></div></div>
 <div class="row"><div><label>Start-LED verschieben (map)</label><input id="t_map" type="number" step="1"></div>
 <div><label>Laufrichtung umkehren</label><select id="t_rev"><option value="">Standard</option><option value="0">nein</option><option value="1">ja</option></select></div></div>

@@ -199,7 +199,7 @@ namespace TizenAmbilight
             c.ZoneCount = Math.Max(4, Math.Min(WledOutput.MaxDrgbLeds, zones));
             c.LedCount = Math.Max(4, Math.Min(WledOutput.MaxDrgbLeds, leds));
 
-            c.Alpha = PrefDouble("alpha", 0.25);
+            c.Alpha = PrefDouble("alpha", 0.5);   // AmbiSync: 0.25 hinkte spürbar hinterher
             if (c.Alpha <= 0.0) c.Alpha = 1.0;
             if (c.Alpha > 1.0) c.Alpha = 1.0;
             c.Gain = PrefDouble("gain", 1.0);
