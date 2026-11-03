@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.2.1"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -1431,6 +1431,13 @@ void logTvDetails(bool force) {
       jget(js, "ver", nullptr).c_str(), power.c_str(), backend.length() ? backend.c_str() : "-", jget(js, "fps", nullptr).c_str(),
       jget(js, "frames", nullptr).c_str(), jget(js, "sendOk", nullptr).c_str(), jget(js, "sendFail", nullptr).c_str());
   if (st.length()) LOG("   Meldung der App: %s", st.c_str());
+  String bt = jget(js, "bt", nullptr);
+  if (bt.length()) {
+    bool le = bt.indexOf("le=1") >= 0, gc = bt.indexOf("gattc=1") >= 0;
+    LOG("   Bluetooth am Fernseher: %s -> %s", bt.c_str(),
+        le && gc ? "Bluetooth LE für Apps vorhanden (Verbindung TV->ESP32 per Bluetooth wäre möglich)"
+                 : "kein Bluetooth LE für Apps (Verbindung per Bluetooth geht auf diesem Fernseher nicht)");
+  }
   if (st.indexOf("rc=-2") >= 0)
     LOG("   >>> Bildaufnahme im Fernseher hängt (rc=-2). Lösung: Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste der Fernbedienung 5 s halten. Die App danach nicht antippen. Vor App-Updates in der Weboberfläche \"Update vorbereiten\" drücken.");
   else if (st.indexOf("rc=-4") >= 0)

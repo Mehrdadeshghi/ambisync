@@ -54,6 +54,7 @@ namespace TizenAmbilight
                     Num(sb, "leds", cfg.LedCount); sb.Append(',');
                     Num(sb, "zones", cfg.ZoneCount); sb.Append(',');
                     Num(sb, "uptime", (now - st.RunStart).TotalSeconds); sb.Append(',');
+                    Str(sb, "bt", BtProbe.Result); sb.Append(',');
                     sb.Append("\"ui\":{");
                     Str(sb, "mode", UiOverlay.ModeName(UiOverlay.Mode)); sb.Append(',');
                     sb.Append("\"running\":").Append(UiOverlay.Running ? "true" : "false").Append(',');
