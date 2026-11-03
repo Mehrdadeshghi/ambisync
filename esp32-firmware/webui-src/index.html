@@ -147,6 +147,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <b>Menü-Erkennung</b><span id="tUi">–</span>
 <b>Menü-Anteil</b><span id="tCov">–</span>
 <b>Status</b><span id="tStat" style="word-break:break-word">–</span>
+<b>Ersatzquelle</b><span id="tPpi">–</span>
 <b>Bluetooth am TV</b><span id="tBt">–</span>
 </div>
 <div class="hint">Diese Werte schickt die TV-App alle 2 s. Es werden keine Bilder übertragen.</div>
@@ -186,6 +187,9 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint">Strombegrenzung schützt Netzteil und Streifen: z. B. 5-V-Netzteil mit 15 A → 13000 mA eintragen.</div>
 <label>Weiche Übergänge <span id="smV"></span></label><input id="smooth" type="range" min="0" max="95" oninput="smV.textContent=this.value+' %'">
 <div class="hint">Regelt, wie schnell die LEDs dem Bild folgen. 40 % = schnell und trotzdem weich (empfohlen), 0 % = sofort, mehr = ruhiger, aber mit Verzögerung. Szenenwechsel springen immer sofort.</div>
+<label>Weißabgleich des Streifens (%)</label>
+<div class="row" style="grid-template-columns:1fr 1fr 1fr"><div><input id="wbR" type="number" min="0" max="100" title="Rot"></div><div><input id="wbG" type="number" min="0" max="100" title="Grün"></div><div><input id="wbB" type="number" min="0" max="100" title="Blau"></div></div>
+<div class="hint">Rot · Grün · Blau. WS2812B-Weiß ist bläulicher als das Fernsehbild: Blau 85–90 % wirkt natürlich. Wirkt die Wand rosa, Rot etwas senken.</div>
 <label>Feine dunkle Übergänge (Dithering)</label><select id="dither"><option value="1">an (empfohlen)</option><option value="0">aus</option></select>
 <label>Wenn der Fernseher nichts sendet</label><select id="idle"><option value="0">LEDs aus</option><option value="1">feste Farbe</option></select>
 <div class="row"><div><label>Farbe</label><input id="idleCol" type="color"></div>
@@ -272,8 +276,9 @@ async function refresh(){clearTimeout(refT);
    $('tUi').innerHTML=u.running?dot('ok')+esc(u.mode)+(u.alphaSeen?' · Transparenz erkannt':'')+' · '+esc(u.w)+'×'+esc(u.h):dot(u.mode=='off'?'':'warn')+(u.mode=='off'?'aus':'nicht aktiv'+(u.err?': '+esc(u.err):''));
    $('tCov').textContent=Math.round((Number(u.applied)||0)*100)+' % eingemischt · '+Math.round((Number(u.coverage)||0)*100)+' % sichtbar';
    {const bt=String(t.bt||'');$('tBt').innerHTML=!bt?'– (TV-App vor 1.2.1)':(/le=1/.test(bt)&&/gattc=1/.test(bt)?dot('ok')+'Bluetooth LE für Apps vorhanden':dot('')+'kein Bluetooth LE für Apps')+' <small style="color:var(--mute)">'+esc(bt)+'</small>'}
+   {const pp=t.ppi||{};$('tPpi').textContent=String(t.backend||'').startsWith('ppi')?(pp.pz+' Punkte, Umlauf '+pp.ringMs+' ms ('+(pp.ringMs>0?(1000/pp.ringMs).toFixed(1):'?')+'×/s), '+pp.slots+' parallel, '+pp.settle+' ms Wartezeit'):'– (nur bei geschütztem Inhalt)'}
    {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste 5 s halten, danach die App NICHT antippen.</b>':'')}
-  }else ['tBack','tFps','tUi','tCov','tStat','tBt'].forEach(i=>$(i).textContent='–');
+  }else ['tBack','tFps','tUi','tCov','tStat','tBt','tPpi'].forEach(i=>$(i).textContent='–');
  }catch(e){if(NETFAIL>=3){$('hdr').textContent='keine Verbindung';heroSet('bad','Keine Verbindung zum ESP32','Ist er an und im WLAN? Seite neu laden, wenn es länger dauert.')}}
  refT=setTimeout(refresh,document.visibilityState==='visible'?2000:6000)
 }
@@ -295,7 +300,7 @@ function hero(s){const wifi=(!s.ap&&s.rssi<-72)?' · <span style="color:var(--wa
 async function loadCfg(){
  let r;try{r=await fetchT('/api/config',{headers:H},6000)}catch(e){toast(e.message);setTimeout(loadCfg,3000);return}if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
+ ['pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
@@ -304,7 +309,7 @@ async function loadCfg(){
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
 }
 function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'none':'';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
-function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function tvParts(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);return parts.join(',')}
 function saveTvP(){return post('/api/config',{tv:tvParts()})}

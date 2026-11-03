@@ -372,8 +372,19 @@ namespace TizenAmbilight
                 }
             }
             Interlocked.Increment(ref Cycles);
-            _cur = (i0 + armed) % pz;
+            int next = (i0 + armed) % pz;
+            // AmbiSync: Zeit für einen kompletten Umlauf (jeder Messpunkt einmal neu) - fürs Statuspaket
+            if (next < i0 || armed >= pz)
+            {
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (_ringT0 != 0) RingMs = (now - _ringT0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _ringT0 = now;
+            }
+            _cur = next;
         }
+        static long _ringT0;
+        public static volatile float RingMsF;
+        public static double RingMs { get { return RingMsF; } set { RingMsF = (float)value; } }
 
         /// <summary>Latest measurements interpolated linearly round the ring onto every zone (8-bit =
         /// 10-bit >> 2). Returns the number of measured positions that have data, 0 if none yet. Render

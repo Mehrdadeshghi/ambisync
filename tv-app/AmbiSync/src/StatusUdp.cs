@@ -55,6 +55,11 @@ namespace TizenAmbilight
                     Num(sb, "zones", cfg.ZoneCount); sb.Append(',');
                     Num(sb, "uptime", (now - st.RunStart).TotalSeconds); sb.Append(',');
                     Str(sb, "bt", BtProbe.Result); sb.Append(',');
+                    sb.Append("\"ppi\":{");
+                    Num(sb, "slots", PpiCapture.Slots); sb.Append(',');
+                    Num(sb, "pz", PpiCapture.PzRequested); sb.Append(',');
+                    Num(sb, "settle", PpiCapture.EffectiveSleepMs); sb.Append(',');
+                    Num(sb, "ringMs", Math.Round(PpiCapture.RingMs)); sb.Append("},");
                     sb.Append("\"ui\":{");
                     Str(sb, "mode", UiOverlay.ModeName(UiOverlay.Mode)); sb.Append(',');
                     sb.Append("\"running\":").Append(UiOverlay.Running ? "true" : "false").Append(',');

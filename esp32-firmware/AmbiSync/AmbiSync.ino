@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.3"
+#define FW_VERSION "1.2.4"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -141,6 +141,7 @@ struct Settings {
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
   int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
   int dither = 1;             // 1 = zeitliches Dithering (feinere dunkle Übergänge)
+  int wbR = 100, wbG = 100, wbB = 88;   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
   int idleMode = 0;           // 0 aus, 1 feste Farbe
   uint32_t idleColor = 0x201000;
   int idleBrightness = 64;
@@ -177,6 +178,9 @@ void loadSettings() {
   cfg.mAPerChannel = constrain(prefs.getInt("mAch", 20), 1, 60);
   cfg.smoothing = constrain(prefs.getInt("smooth", 40), 0, 95);
   cfg.dither = prefs.getInt("dither", 1) ? 1 : 0;
+  cfg.wbR = constrain(prefs.getInt("wbR", 100), 0, 100);
+  cfg.wbG = constrain(prefs.getInt("wbG", 100), 0, 100);
+  cfg.wbB = constrain(prefs.getInt("wbB", 88), 0, 100);
   cfg.idleMode = constrain(prefs.getInt("idle", 0), 0, 1);
   cfg.idleColor = prefs.getUInt("idleCol", 0x201000);
   cfg.idleBrightness = constrain(prefs.getInt("idleBri", 64), 0, 255);
@@ -202,6 +206,7 @@ void saveSettings() {
   prefs.putInt("mAch", cfg.mAPerChannel);
   prefs.putInt("smooth", cfg.smoothing);
   prefs.putInt("dither", cfg.dither);
+  prefs.putInt("wbR", cfg.wbR); prefs.putInt("wbG", cfg.wbG); prefs.putInt("wbB", cfg.wbB);
   prefs.putInt("idle", cfg.idleMode);
   prefs.putUInt("idleCol", cfg.idleColor);
   prefs.putInt("idleBri", cfg.idleBrightness);
@@ -706,8 +711,9 @@ void renderTask(void *) {
     // zeitliches Dithering: der Nachkommarest wird ins nächste Bild mitgenommen. Bei 60 Bildern/s
     // ergibt das Zwischenstufen, die ein 8-Bit-Streifen allein nicht kann (weiche dunkle Übergänge).
     bool dith = cfg.dither && !analogOn && tm == TEST_NONE;
+    float wb[3] = {cfg.wbR / 100.0f, cfg.wbG / 100.0f, cfg.wbB / 100.0f};
     for (int i = 0; i < n * 3; i++) {
-      float v = outBuf[i] * bscale;
+      float v = outBuf[i] * bscale * wb[i % 3];
       if (v < 0) v = 0; else if (v > 255) v = 255;
       int o;
       if (dith && v > 0.05f) {
@@ -873,6 +879,7 @@ void handleGetConfig() {
   j += "\"mAch\":" + String(cfg.mAPerChannel) + ",";
   j += "\"smooth\":" + String(cfg.smoothing) + ",";
   j += "\"dither\":" + String(cfg.dither) + ",";
+  j += "\"wbR\":" + String(cfg.wbR) + ",\"wbG\":" + String(cfg.wbG) + ",\"wbB\":" + String(cfg.wbB) + ",";
   j += "\"idle\":" + String(cfg.idleMode) + ",";
   char col[8]; snprintf(col, sizeof(col), "#%06X", (unsigned)(cfg.idleColor & 0xFFFFFF));
   j += "\"idleCol\":\"" + String(col) + "\",";
@@ -926,6 +933,7 @@ void handleSetConfig() {
   cfg.mAPerChannel = argInt("mAch", cfg.mAPerChannel, 1, 60);
   cfg.smoothing = argInt("smooth", cfg.smoothing, 0, 95);
   cfg.dither = argInt("dither", cfg.dither, 0, 1);
+  cfg.wbR = argInt("wbR", cfg.wbR, 0, 100); cfg.wbG = argInt("wbG", cfg.wbG, 0, 100); cfg.wbB = argInt("wbB", cfg.wbB, 0, 100);
   cfg.idleMode = argInt("idle", cfg.idleMode, 0, 1);
   if (server.hasArg("idleCol")) {
     String c = server.arg("idleCol"); c.replace("#", "");
@@ -999,9 +1007,9 @@ void handleTvControl() {
   }
   // Ersatz-Bildquelle (Samsung-Farbmessung, bei DRM-Inhalten): ab Werk 24 Messpunkte nacheinander mit je
   // 40 ms Wartezeit -> jeder Punkt nur ~1x pro Sekunde neu, die LEDs springen dann im Sekundentakt.
-  // 12 Punkte mit 20 ms (eine Bildwechselzeit) sind ~4x schneller; die App verteilt sie auf alle LEDs.
-  if (tokenInt(cfg.tvTokens, "pz", -1) < 0) body = body.length() ? body + ",pz=12" : String("pz=12");
-  if (tokenInt(cfg.tvTokens, "psleep", -99) == -99) body = body.length() ? body + ",psleep=20" : String("psleep=20");
+  // 10 Punkte mit 17 ms (gut eine Bildwechselzeit bei 60 Hz) sind ~5x schneller; die App verteilt sie auf alle LEDs.
+  if (tokenInt(cfg.tvTokens, "pz", -1) < 0) body = body.length() ? body + ",pz=10" : String("pz=10");
+  if (tokenInt(cfg.tvTokens, "psleep", -99) == -99) body = body.length() ? body + ",psleep=17" : String("psleep=17");
   if (tokenInt(cfg.tvTokens, "stale", -1) < 0) body = body.length() ? body + ",stale=60000" : String("stale=60000");
   if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
   else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
@@ -1445,6 +1453,11 @@ void logTvDetails(bool force) {
       jget(js, "ver", nullptr).c_str(), power.c_str(), backend.length() ? backend.c_str() : "-", jget(js, "fps", nullptr).c_str(),
       jget(js, "frames", nullptr).c_str(), jget(js, "sendOk", nullptr).c_str(), jget(js, "sendFail", nullptr).c_str());
   if (st.length()) LOG("   Meldung der App: %s", st.c_str());
+  if (backend.startsWith("ppi")) {
+    const char *pp = strstr(js, "\"ppi\":{");
+    if (pp) LOG("   Ersatz-Bildquelle: %s Messpunkte, %s Slots, Wartezeit %s ms, ein Umlauf %s ms",
+                jget(js, "pz", pp).c_str(), jget(js, "slots", pp).c_str(), jget(js, "settle", pp).c_str(), jget(js, "ringMs", pp).c_str());
+  }
   String bt = jget(js, "bt", nullptr);
   if (bt.length()) {
     bool le = bt.indexOf("le=1") >= 0, gc = bt.indexOf("gattc=1") >= 0;
