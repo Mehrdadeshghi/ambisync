@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.1.1"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -833,6 +833,7 @@ void handleStatus() {
   j += "\"current\":" + String(estCurrent) + ",";
   j += "\"limiting\":" + String(limiting ? "true" : "false") + ",";
   j += "\"test\":" + String(testMode) + ",";
+  j += "\"tvPaused\":" + String(tvPaused() ? "true" : "false") + ",";
   static char tvCopy[1401];
   portENTER_CRITICAL(&tvMux);
   memcpy(tvCopy, tvStatusBuf, sizeof(tvCopy));
@@ -956,6 +957,20 @@ void handleTest() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// "Update vorbereiten": die TV-App hört auf, Bilder aufzunehmen, bleibt aber am Leben. Wird sie danach
+// (z. B. vom TizenBrew Installer) beendet, ist keine Aufnahme mitten im Lauf, und die Video-Ebene des
+// Fernsehers bleibt heil (sonst rc=-2 bis zum nächsten echten Neustart). Läuft nach 20 min von selbst ab.
+static volatile uint32_t tvPauseUntil = 0;
+bool tvPaused() { return tvPauseUntil && (int32_t)(tvPauseUntil - millis()) > 0; }
+
+void handleTvPause() {
+  if (!authOk()) return;
+  bool on = server.arg("on") == "1";
+  tvPauseUntil = on ? (millis() + 20UL * 60 * 1000) | 1 : 0;
+  LOG(on ? "TV-App: Aufnahme angehalten (Update vorbereiten, max. 20 min)" : "TV-App: Aufnahme läuft wieder");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 // Die TV-App fragt hier ihre Einstellungen ab (alle 250 ms). Keine Anmeldung: der Inhalt sind nur
 // geprüfte Zahlenwerte, die der Nutzer in dieser Oberfläche gesetzt hat.
 void handleTvControl() {
@@ -963,7 +978,8 @@ void handleTvControl() {
   String body = cfg.tvTokens;
   // Plug & Play: die TV-App übernimmt die LED-Anzahl sofort, ohne Neustart (außer sie ist dort fest eingestellt)
   if (cfg.stripType == 0 && tokenInt(cfg.tvTokens, "leds", -1) < 0) body = body.length() ? body + ",leds=" + String(cfg.ledCount) : "leds=" + String(cfg.ledCount);
-  if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
+  if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
+  else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
   server.send(200, "text/plain", body);
 }
 
@@ -1131,6 +1147,7 @@ void setupWeb() {
   server.on("/api/leds", HTTP_GET, handleLeds);
   server.on("/api/reboot", HTTP_POST, []() { if (!authOk()) return; server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); });
   server.on("/tv/control", HTTP_GET, handleTvControl);
+  server.on("/api/tvpause", HTTP_POST, handleTvPause);
   server.on("/update", HTTP_POST, handleUpdateDone, handleUpdateUpload);
   server.onNotFound([]() {
     if (apMode) {  // Captive Portal: alles auf die Einrichtungsseite umleiten
@@ -1398,7 +1415,7 @@ void logTvDetails(bool force) {
       jget(js, "frames", nullptr).c_str(), jget(js, "sendOk", nullptr).c_str(), jget(js, "sendFail", nullptr).c_str());
   if (st.length()) LOG("   Meldung der App: %s", st.c_str());
   if (st.indexOf("rc=-2") >= 0)
-    LOG("   >>> Bildaufnahme im Fernseher hängt (rc=-2). Lösung: Fernseher 60 s vom Strom trennen (Stecker ziehen). Die App danach nicht antippen.");
+    LOG("   >>> Bildaufnahme im Fernseher hängt (rc=-2). Lösung: Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste der Fernbedienung 5 s halten. Die App danach nicht antippen. Vor App-Updates in der Weboberfläche \"Update vorbereiten\" drücken.");
   else if (st.indexOf("rc=-4") >= 0)
     LOG("   >>> Geschützter Inhalt (DRM, z. B. Netflix): Die App nutzt dann die gröbere Samsung-Farbmessung.");
   if (ui) LOG("   Menü-Erkennung: Modus %s, läuft %s, Transparenz %s, %s Aufnahmen (%sx%s), Fehler %s, Menü-Anteil %s%s%s",

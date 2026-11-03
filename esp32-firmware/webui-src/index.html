@@ -136,6 +136,8 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <b>Status</b><span id="tStat" style="word-break:break-word">–</span>
 </div>
 <div class="hint">Diese Werte schickt die TV-App alle 2 s. Es werden keine Bilder übertragen.</div>
+<div class="btns"><button class="sec" id="tvPauseBtn" onclick="tvPause()">Update vorbereiten</button></div>
+<div class="hint" id="tvPauseHint">Vor dem Neuinstallieren der TV-App drücken: die App hört auf aufzunehmen, damit die Bildaufnahme des Fernsehers beim Update nicht hängen bleibt. Nach dem Update „Weiter“ drücken (sonst läuft es nach 20 min von selbst weiter).</div>
 </section>
 
 <section>
@@ -226,7 +228,7 @@ async function post(url,data){const r=await fetch(url,{method:'POST',headers:H,b
 function dot(c){return '<span class="dot '+c+'"></span>'}
 function fmtUp(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+' h '+m+' min'}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-const BACK={video_plane:'Video-Ebene',ui_only:'nur Menü/Startseite','ppi(auto)':'Samsung-Farbmessung (geschützter Inhalt)','ppi(forced)':'Samsung-Farbmessung',file:'Bildschirmfoto'};
+const BACK={video_plane:'Video-Ebene',ui_only:'nur Menü/Startseite','ppi(auto)':'Samsung-Farbmessung (Ersatz: geschützter Inhalt oder Video-Ebene hängt)','ppi(forced)':'Samsung-Farbmessung',file:'Bildschirmfoto'};
 async function refresh(){
  try{const s=await (await fetch('/api/status')).json();
   $('hdr').textContent=(s.ap?'Einrichtungsmodus':s.host+'.local · '+s.ip)+' · Firmware '+s.fw;
@@ -239,6 +241,7 @@ async function refresh(){
   $('sCur').innerHTML=(s.limiting?dot('warn'):'')+(s.current/1000).toFixed(2)+' A'+(s.limiting?' (begrenzt)':'');
   $('sWifi').textContent=s.ap?'Einrichtungs-WLAN':s.rssi+' dBm';
   $('sUp').textContent=fmtUp(s.uptime);
+  TVP=!!s.tvPaused;$('tvPauseBtn').textContent=TVP?'Weiter (Aufnahme fortsetzen)':'Update vorbereiten';$('tvPauseBtn').className=TVP?'':'sec';
   const t=s.tv;
   if(t&&tvOk){
    $('tBack').textContent=(BACK[t.backend]||t.backend)+(t.power&&t.power!='on'?' · TV: '+t.power:'');
@@ -246,7 +249,7 @@ async function refresh(){
    const u=t.ui||{};
    $('tUi').innerHTML=u.running?dot('ok')+esc(u.mode)+(u.alphaSeen?' · Transparenz erkannt':'')+' · '+esc(u.w)+'×'+esc(u.h):dot(u.mode=='off'?'':'warn')+(u.mode=='off'?'aus':'nicht aktiv'+(u.err?': '+esc(u.err):''));
    $('tCov').textContent=Math.round((Number(u.applied)||0)*100)+' % eingemischt · '+Math.round((Number(u.coverage)||0)*100)+' % sichtbar';
-   {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen), danach die App NICHT antippen.</b>':'')}
+   {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste 5 s halten, danach die App NICHT antippen.</b>':'')}
   }else ['tBack','tFps','tUi','tCov','tStat'].forEach(i=>$(i).textContent='–');
  }catch(e){$('hdr').textContent='keine Verbindung'}
 }
@@ -274,6 +277,7 @@ function saveWifi(){const s=$('ssidMan').value.trim()||SEL;const a=$('wadmin').v
  if(a.length<6){toast('Bitte ein Admin-Passwort mit mindestens 6 Zeichen festlegen');return}
  post('/api/config',{admin:a,ssid:s,pass:$('wpass').value}).then(()=>toast('Verbinde mit '+s+' … danach http://ambisync.local öffnen')).catch(e=>toast(e.message))}
 function saveWifi2(){post('/api/config',{ssid:$('ssid2').value,pass:$('pass2').value||'********'}).then(()=>toast('Neustart …')).catch(e=>toast(e.message))}
+let TVP=false;function tvPause(){post('/api/tvpause',{on:TVP?'0':'1'}).then(()=>{toast(TVP?'Aufnahme läuft wieder':'Angehalten – jetzt kannst du die TV-App neu installieren');refresh()}).catch(e=>toast(e.message))}
 function test(m){post('/api/test',{m}).then(()=>toast(m=='none'?'Test beendet':'Testbild läuft')).catch(e=>toast(e.message))}
 function upd(){const f=$('fw').files[0];if(!f)return;const fd=new FormData();fd.append('firmware',f);$('updMsg').textContent='lädt hoch …';
  fetch('/update',{method:'POST',headers:H,body:fd}).then(r=>r.text()).then(t=>$('updMsg').textContent=t).catch(()=>$('updMsg').textContent='Fehler')}

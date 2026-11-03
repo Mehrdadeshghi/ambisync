@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.1 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.1.1 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -458,7 +458,7 @@ namespace TizenAmbilight
                                 vr = VideoPlaneCapture.Capture();
                                 _lastPlaneProbeUtc = DateTime.UtcNow;
                             }
-                            if (!_ppiAuto || vr.Rc != -4 || vr.HasFrame) st.LastStatus = vr.Status;
+                            if (!_ppiAuto || (vr.Rc != -4 && vr.Rc != -2) || vr.HasFrame) st.LastStatus = vr.Status;
                             capMs = vr.CaptureMs;
                             if (vr.HasFrame)
                             {
@@ -470,8 +470,13 @@ namespace TizenAmbilight
                                     L("video plane returned rc=0 again: back to the video plane (ppi switches=" + st.PpiSwitches + ")");
                                 }
                             }
-                            else if (vr.Rc == -4)
+                            else if (vr.Rc == -4 || vr.Rc == -2)
                             {
+                                // AmbiSync: rc=-2 heißt, die Video-Ebene des Fernsehers hängt (z. B. nachdem die App
+                                // bei einem Update mitten in einer Aufnahme beendet wurde). Bis zum nächsten echten
+                                // Neustart des Fernsehers kommt dort nichts mehr. Statt dunkler LEDs übernimmt dann
+                                // wie bei DRM die Samsung-Farbmessung; sobald die Ebene wieder rc=0 liefert, geht
+                                // es automatisch zurück.
                                 // rc=-4 is DRM: the plane is withheld. rc=-1 ("not ready") is the normal
                                 // post-start burst and must NOT trigger the fallback, and it must not
                                 // reset the streak either, or an rc=-4/-1 mix would never qualify.
@@ -479,7 +484,8 @@ namespace TizenAmbilight
                                 if (!_ppiAuto && _drmStreak >= PpiEnterStreak && EnsurePpi(cfg))
                                 {
                                     _ppiAuto = true; st.PpiSwitches++;
-                                    L("video plane rc=-4 x" + _drmStreak + " (DRM): falling back to the ppi_ve hardware sampler");
+                                    L("video plane rc=" + vr.Rc + " x" + _drmStreak + (vr.Rc == -4 ? " (DRM)" : " (plane wedged)") +
+                                      ": falling back to the ppi_ve hardware sampler");
                                 }
                             }
                             usePpi = _ppiAuto && !vr.HasFrame;
