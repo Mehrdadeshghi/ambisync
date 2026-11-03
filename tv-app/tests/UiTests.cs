@@ -103,7 +103,12 @@ static class UiTests
         v = Video(N, 255, 0, 0);
         cov = UiOverlay.BlendInto(v, false);
         Check("eingefrorene UI springt bei Video-Pause nicht zurück", cov < 0.01 && v.R[0] == 255, "cov=" + cov.ToString("0.00"));
-        // ... aber eine echte Änderung (z. B. Pause-Menü) erscheint sofort wieder
+        // ... aber eine echte Änderung (z. B. Pause-Menü) erscheint wieder - weich über 300 ms, nicht schlagartig
+        UiOverlay.Analyse(Img(W, H, (x, y) => (0, 0, 255, 255)), layout, UiOverlay.Mode);
+        v = Video(N, 255, 0, 0);
+        double cov0 = UiOverlay.BlendInto(v, false);
+        Check("neue UI nach Sperre blendet weich ein (nicht schlagartig)", cov0 < 0.5, "cov=" + cov0.ToString("0.00"));
+        System.Threading.Thread.Sleep(350);
         UiOverlay.Analyse(Img(W, H, (x, y) => (0, 0, 255, 255)), layout, UiOverlay.Mode);
         v = Video(N, 255, 0, 0);
         cov = UiOverlay.BlendInto(v, false);

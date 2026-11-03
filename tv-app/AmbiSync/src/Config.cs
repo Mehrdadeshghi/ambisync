@@ -264,7 +264,7 @@ namespace TizenAmbilight
             c.BarHold = PrefInt("barHold", 8);
             if (c.BarHold < 1) c.BarHold = 1;
             if (c.BarHold > 90) c.BarHold = 90;
-            c.Punch = PrefDouble("punch", 0.15);
+            c.Punch = PrefDouble("punch", 0.0);   // AmbiSync: Helligkeits-Überschwinger bei Schnitten wirkte wie Flackern
             if (c.Punch < 0) c.Punch = 0;
             if (c.Punch > 1.0) c.Punch = 1.0;
             c.PunchFrames = PrefInt("punchFrames", 5);

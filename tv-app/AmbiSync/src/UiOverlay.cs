@@ -75,6 +75,7 @@ namespace TizenAmbilight
         static Thread _thread;
         static string _dir;
         static volatile int _zoneCount;
+        static DateTime _rampUtc = DateTime.MinValue;
         static double _bandFrac;
 
         public static string ModeName(int m)
@@ -273,7 +274,13 @@ namespace TizenAmbilight
             {
                 _r = r; _g = g; _b = b; _w = wt; _count = count;
                 _frameUtc = DateTime.UtcNow;
-                if (sig != _sig) { _sig = sig; _changeUtc = _frameUtc; _staleLatched = false; }
+                if (sig != _sig)
+                {
+                    // AmbiSync: war die Menü-Ebene schon ausgeblendet, nicht schlagartig zurück (z. B. weil sich
+                    // ein Untertitel ändert), sondern über 300 ms einblenden
+                    if (_staleLatched) _rampUtc = _frameUtc;
+                    _sig = sig; _changeUtc = _frameUtc; _staleLatched = false;
+                }
             }
         }
 
@@ -338,6 +345,8 @@ namespace TizenAmbilight
                     if (age > staleMs) keep = Math.Max(0.0, 1.0 - (age - staleMs) / 1000.0);
                     if (keep <= 0.0) _staleLatched = true;
                 }
+                double sinceRamp = (now - _rampUtc).TotalMilliseconds;
+                if (sinceRamp >= 0 && sinceRamp < 300) keep *= sinceRamp / 300.0;
                 if (keep <= 0.0) { AppliedCoverage = 0; return 0; }
 
                 double sum = 0;

@@ -30,6 +30,8 @@ namespace TizenAmbilight
         static readonly VideoPlaneResult PlaneAssumedLocked = new VideoPlaneResult { Rc = -4 };
         /// <summary>While the sampler carries the strip, ask the (DRM-locked) plane only this often.</summary>
         const int PlaneProbeWhilePpiMs = 500;
+        static DateTime _lastLockedUtc = DateTime.MinValue;   // letzte echte Meldung rc=-4/-2 der Video-Ebene
+        static DateTime _videoLiveUtc = DateTime.MinValue;
 
         /// <summary>Init the sampler on first need; after a failure retry at most every 30 s.</summary>
         static bool EnsurePpi(Config cfg)

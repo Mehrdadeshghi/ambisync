@@ -175,6 +175,8 @@ namespace TizenAmbilight
                 {
                     _geomLayout = layout; _zones = n; _px = px; _py = py; _fx = fx2; _fy = fy2;
                     Place(); _rebuild = true;
+                    // AmbiSync: alte Messpunkte gehören zur alten Zonenzahl - verwerfen, bis neu gemessen ist
+                    _mz = null; if (_have != null) Array.Clear(_have, 0, _have.Length);
                 }
                 _geomReady = true;
                 InitError = null;
@@ -457,7 +459,7 @@ namespace TizenAmbilight
         const int ProbeN = 8;
         const double ProbeDepth = 0.25;
         const int BlackMax10 = 6;
-        const int ProbeIntervalS = 12;
+        const int ProbeIntervalS = 45;   // AmbiSync: eine Balkenprüfung hält die Messung 1-2,5 s an; alle 12 s gab das Sprünge
 
         /// <summary>Block top-left per zone for the current active rectangle. Caller holds _lock.</summary>
         static void Place()

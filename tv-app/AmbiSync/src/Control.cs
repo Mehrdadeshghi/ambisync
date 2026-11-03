@@ -136,6 +136,7 @@ namespace TizenAmbilight
                     case "uithr":   if (iv >= 0 && iv <= 128) { cfg.UiBlackThresh = iv; UiOverlay.BlackThresh = iv; } break;
                     case "uistale": if (iv >= 0 && iv <= 600000) { cfg.UiStaleMs = iv; UiOverlay.StaleMs = iv; } break;
                 }
+                if (cfg.AlphaFast < cfg.Alpha) cfg.AlphaFast = cfg.Alpha;   // Schnitte nie träger als normale Bilder
                 st.LastMapping = "map=" + cfg.MapOffset + " rev=" + (cfg.MapReverse ? 1 : 0) +
                                  " leds=" + cfg.LedCount + " test=" + (cfg.TestPattern ? 1 : 0) +
                                  " alpha=" + cfg.Alpha.ToString("0.###", CultureInfo.InvariantCulture) +

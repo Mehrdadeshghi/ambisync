@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.2.4 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.2.5 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -472,6 +472,7 @@ namespace TizenAmbilight
                             }
                             else if (vr.Rc == -4 || vr.Rc == -2)
                             {
+                                if (!ReferenceEquals(vr, PlaneAssumedLocked)) _lastLockedUtc = DateTime.UtcNow;
                                 // AmbiSync: rc=-2 heißt, die Video-Ebene des Fernsehers hängt (z. B. nachdem die App
                                 // bei einem Update mitten in einer Aufnahme beendet wurde). Bis zum nächsten echten
                                 // Neustart des Fernsehers kommt dort nichts mehr. Statt dunkler LEDs übernimmt dann
@@ -488,6 +489,16 @@ namespace TizenAmbilight
                                       ": falling back to the ppi_ve hardware sampler");
                                 }
                             }
+                            else if (_ppiAuto && !ReferenceEquals(vr, PlaneAssumedLocked) &&
+                                     (DateTime.UtcNow - _lastLockedUtc).TotalMilliseconds > 1500)
+                            {
+                                // AmbiSync: die Video-Ebene meldet nicht mehr "geschützt/hängt", sondern z. B. rc=-1
+                                // (kein Video: Startseite, Menü). Die Ersatzquelle misst dort nur Schwarz oder den
+                                // letzten Film - zurück zum normalen Weg, damit Menüs wieder Licht bekommen.
+                                _ppiAuto = false; _drmStreak = 0; st.PpiSwitches++;
+                                PpiCapture.Park();
+                                L("video plane rc=" + vr.Rc + " (no protected video any more): leaving ppi (switches=" + st.PpiSwitches + ")");
+                            }
                             usePpi = _ppiAuto && !vr.HasFrame;
                         }
                         st.BackendActive = usePpi ? (forcePpi ? "ppi(forced)" : "ppi(auto)") : "video_plane";
@@ -496,7 +507,7 @@ namespace TizenAmbilight
                         {
                             if (!EnsurePpi(cfg))
                             {
-                                if (TryUiOnly(cfg, st, ref layout, ref smoothed, out raw, true))
+                                if (TryUiOnly(cfg, st, ref layout, ref smoothed, out raw, vr != null && vr.Rc == -4))
                                 {
                                     uiOnlyFrame = true; zMs = 0;
                                     goto smoothStage;
@@ -836,11 +847,12 @@ namespace TizenAmbilight
                     {
                         if (_blendBuf == null || _blendBuf.Count != raw.Count) _blendBuf = new ZoneColors(raw.Count);
                         _blendBuf.CopyFrom(raw);          // raw kann ein geteilter Puffer sein (ppi)
-                        bool videoLive = st.ContentUnchanged < 10;
+                        if (st.ContentUnchanged < 10) _videoLiveUtc = DateTime.UtcNow;
+                        bool videoLive = (DateTime.UtcNow - _videoLiveUtc).TotalMilliseconds < 2000;   // mit Nachlauf, sonst flackert die Menü-Einblendung
                         double cov = UiOverlay.BlendInto(_blendBuf, videoLive);
                         if (cov > 0.004) { raw = _blendBuf; st.UiBlendFrames++; }
                         // ein sichtbares Menü ist kein "eingefrorenes Video": nicht abdunkeln
-                        if (cov > 0.5) st.LastContentChangeUtc = DateTime.UtcNow;
+                        if (cov > 0.5 || (cov > 0.004 && UiOverlay.MsSinceChange < 1000)) st.LastContentChangeUtc = DateTime.UtcNow;
                     }
 
                     // ---- 4. temporal smoothing ----
@@ -948,7 +960,10 @@ namespace TizenAmbilight
 
                         byte[] payload = WledOutput.BuildDrgbMapped(toSend, (byte)cfg.WledTimeout,
                                                                     cfg.Gain * punchGain * staleDim,
-                                                                    effGamma, cfg.Black,
+                                                                    effGamma,
+                                                                    // Schwarzwert 12 ist für die HDR-Video-Ebene abgestimmt; die Ersatzquelle liefert
+                                                                    // schon fertiges RGB, dort verschluckte er dunkle Töne
+                                                                    (st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal) ? Math.Min(cfg.Black, 3.0) : cfg.Black,
                                                                     cfg.MapOffset, cfg.MapReverse, cfg.LedCount);
                         string err = WledOutput.Send(cfg.WledIp, cfg.WledPort, payload);
                         if (err == null) { st.SendOk++; st.LastSendErr = null; }
@@ -988,7 +1003,9 @@ namespace TizenAmbilight
                         // A frozen picture (menu, pause, loading) needs even fewer updates. The
                         // content signature already says it is static, so back off further - the
                         // sleep is capped so a scene change is still noticed within ~200 ms.
-                        if (st.ContentUnchanged > 10) targetMs *= 3;
+                        // (nicht bei der Ersatzquelle: dort ändern sich pro Bild nur wenige Messpunkte, ruhige
+                        //  Szenen galten als "steht still" und die Bildrate sprang zwischen 25 und 8 hin und her)
+                        if (st.ContentUnchanged > 10 && !(st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal)) targetMs *= 3;
                         int elapsedMs = (int)(DateTime.UtcNow - lastFrameUtc).TotalMilliseconds;
                         int wait = targetMs - elapsedMs;
                         if (wait > 200) wait = 200;

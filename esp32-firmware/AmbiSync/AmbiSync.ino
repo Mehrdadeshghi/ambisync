@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.4"
+#define FW_VERSION "1.2.5"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -594,7 +594,7 @@ void renderTask(void *) {
   const uint32_t periodMs = 16;  // ~60 Bilder/s
   uint32_t fpsT0 = millis(), fpsN = 0, rtN0 = 0;
   float idleFade = 0;            // 0 = Echtzeit, 1 = Leerlauf (für weiches Ausblenden)
-  uint32_t lastFrameSeen = 0, lastFrameAt = 0;
+  uint32_t lastFrameSeen = 0, lastFrameAt = 0, lastGapMs = 0;
   float glideP = 1.0f, glideE = 1.0f, glideMs = 40.0f;
   for (;;) {
     uint32_t t0 = millis();
@@ -647,6 +647,7 @@ void renderTask(void *) {
         lastFrameSeen = fr;
         uint32_t gap = t0 - lastFrameAt;
         if (lastFrameAt != 0 && gap >= 8 && gap < 1500) frameIntervalMs += ((float)gap - frameIntervalMs) * 0.2f;
+        lastGapMs = (lastFrameAt != 0 && gap >= 8) ? gap : 0;
         lastFrameAt = t0;
         for (int i = 0; i < n * 3; i++) glideFrom[i] = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;   // Stand jetzt
         portENTER_CRITICAL(&frameMux);
@@ -656,7 +657,9 @@ void renderTask(void *) {
         uint32_t diff = 0;
         for (int i = 0; i < n * 3; i++) diff += (uint32_t)fabsf(glideTo[i] - glideFrom[i]);
         float meanDiff = n ? (float)diff / (n * 3) : 0;
-        float iv = constrain(frameIntervalMs, 16.0f, 1000.0f);
+        // Abstand zum vorigen Bild direkt nehmen (nicht den trägen Mittelwert): springt die Bildrate des
+        // Fernsehers, würde sonst zu kurz überblendet und dann gehalten -> Stufen
+        float iv = constrain((lastGapMs > 0 && lastGapMs < 1500) ? (float)lastGapMs : frameIntervalMs, 16.0f, 1000.0f);
         float g = iv * (cfg.smoothing / 40.0f);              // Standard 40 % = genau ein Bildabstand
         // Obergrenze, damit langsame Bildquellen (Samsung-Farbmessung, schwaches WLAN) keine spürbare
         // Verzögerung bekommen: Standard 40 % -> höchstens 160 ms
@@ -666,8 +669,7 @@ void renderTask(void *) {
         glideMsNow = g;
       }
       glideP = glideMs <= 1.0f ? 1.0f : min(1.0f, (float)(t0 - lastFrameAt) / glideMs);
-      // bei vielen Bildern/s linear (gleichmäßige Bewegung), bei wenigen weich anfahren und abbremsen
-      glideE = frameIntervalMs < 100.0f ? glideP : glideP * glideP * (3.0f - 2.0f * glideP);
+      glideE = glideP;   // linear: gleichmäßige Bewegung, kein Halten an den Bildgrenzen
       for (int i = 0; i < n * 3; i++) {
         float v = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;
         want[i] = (uint8_t)(v + 0.5f);
