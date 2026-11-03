@@ -41,9 +41,19 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 .wiz svg{width:100%;height:auto;display:block;border-radius:10px;background:#07080b}
 .pick{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.pick button{margin:0;background:#2a3140}.pick button.on{background:var(--acc)}
 .wizres{margin-top:12px;padding:10px 12px;border-radius:8px;background:#0f1218;border:1px solid var(--line);font-size:14px}
+.tabs{max-width:980px;margin:6px auto 0;padding:0 16px;display:flex;gap:6px;flex-wrap:wrap}
+.tabs button{margin:0;background:#1d222c;color:var(--mute)}.tabs button.on{background:var(--acc);color:#fff}
+[data-tab][hidden]{display:none!important}
+.hero{display:grid;gap:4px;border-left:4px solid var(--mute)}.hero.h-ok{border-left-color:var(--ok)}.hero.h-warn{border-left-color:var(--warn)}.hero.h-bad{border-left-color:var(--bad)}
+.hero-t{font-size:18px;font-weight:600}.hero-d{color:var(--mute);font-size:14px}
+.net-st{font-size:12px;color:var(--warn)}
+.msteps{margin:14px 0 0;padding-left:22px;display:grid;gap:8px;font-size:14px}.msteps b{color:#fff}
+.msteps li::marker{color:var(--acc);font-weight:700}
 </style></head><body>
-<header><h1>AmbiSync</h1><small id="hdr">verbinde …</small></header>
+<header><h1>AmbiSync</h1><small id="hdr">verbinde …</small><span id="net" class="net-st"></span></header>
+<nav class="tabs" id="tabs"><button data-t="home" class="on">Übersicht</button><button data-t="mount">Einbau</button><button data-t="set">Einstellungen</button><button data-t="sys">System</button></nav>
 <main>
+<section class="full hero" id="hero" data-tab="home"><div class="hero-t" id="heroT">verbinde mit dem ESP32 …</div><div class="hero-d" id="heroD"></div></section>
 
 <section id="setup" class="full" style="display:none">
 <h2>Einrichtung: Heim-WLAN</h2>
@@ -63,7 +73,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <details open><summary>Protokoll des ESP32 (live)</summary><pre id="log1" class="log">lädt …</pre></details>
 </section>
 
-<section class="full" id="liveSec">
+<section data-tab="home" class="full" id="liveSec">
 <h2>Live-Ansicht: was der ESP32 sieht und was die LEDs leuchten</h2>
 <svg id="lv" class="lv" viewBox="0 0 1000 600" role="img" aria-label="Fernseher mit LEDs">
 <defs>
@@ -88,32 +98,35 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint">Innen: die Farben an den Bildrändern, wie sie vom Fernseher beim ESP32 ankommen. Außen: was der LED-Streifen gerade wirklich leuchtet (mit Helligkeit und Strombegrenzung). <b>1</b> und <b>2</b> markieren die ersten beiden LEDs, also Anfang und Laufrichtung.</div>
 </section>
 
-<section class="full" id="wizSec">
-<h2>Einbau-Assistent: wo beginnt dein LED-Streifen?</h2>
+<section class="full" id="wizSec" data-tab="mount">
+<h2>Einbau: so klebst du den Streifen an deinen Fernseher</h2>
 <div class="wiz">
 <div>
-<div class="hint">Stell dich <b>vor</b> den Fernseher (von hinten sind links und rechts vertauscht). Der Anfang ist das Ende mit dem Kabel zum ESP32, der Pfeil auf dem Streifen zeigt vom Anfang weg.</div>
-<label class="step">1. Wo ist der Anfang? (im Bild antippen)</label>
-<div class="pick" id="wzCorner">
-<button data-c="bl">unten links</button><button data-c="bm">unten Mitte</button><button data-c="br">unten rechts</button><button data-c="tl">oben links</button><button data-c="tr">oben rechts</button>
+<label class="step">1. Welcher Fernseher?</label>
+<select id="mTv"><option value="samsung65">Samsung 65″ Q7F (144,4 × 82,6 cm)</option><option value="43">43 Zoll</option><option value="50">50 Zoll</option><option value="55">55 Zoll</option><option value="65">65 Zoll</option><option value="75">75 Zoll</option><option value="85">85 Zoll</option><option value="own">eigene Maße …</option></select>
+<div class="row" id="mOwn" style="display:none"><div><label>Breite (cm)</label><input id="mW" type="number" min="30" max="300" step="0.1" value="144.4"></div><div><label>Höhe (cm)</label><input id="mH" type="number" min="20" max="200" step="0.1" value="82.6"></div></div>
+<label class="step">2. Dein Streifen</label>
+<div class="row"><div><label>LEDs pro Meter</label><select id="mDen"><option value="60">60 (dein BTF-Streifen)</option><option value="30">30</option><option value="144">144</option></select></div>
+<div><label>Länge der Rolle (m)</label><input id="mRoll" type="number" min="1" max="20" step="0.5" value="5"></div></div>
+<label>Abstand vom Rand des Fernsehers (cm)</label><input id="mIn" type="number" min="0" max="15" step="0.5" value="4">
+<label class="step">3. Wo kommt das ESP32 hin? (du stehst <u>hinter</u> dem Fernseher)</label>
+<div class="pick" id="mStart"><button data-v="bl" class="on">unten links</button><button data-v="br">unten rechts</button></div>
+<label class="step">4. Vom Start aus zuerst …</label>
+<div class="pick" id="mDir"><button data-v="up" class="on">nach oben (empfohlen)</button><button data-v="side">zur Seite</button></div>
 </div>
-<label class="step">2. In welche Richtung läuft er von dort?</label>
-<div class="pick" id="wzDir"></div>
-<div class="wizres" id="wzRes">Bitte Anfang und Richtung wählen.</div>
-<div class="btns"><button id="wzApply" onclick="wzApply()" disabled>Übernehmen</button><button class="sec" onclick="wzCheck()">Am Fernseher prüfen</button><button class="sec" onclick="test('edges')">Nur am Streifen prüfen</button></div>
-<div class="hint">„Am Fernseher prüfen“ zeigt 60 s lang ein Testbild über den Fernseher: oben <b style="color:#ff5a5a">rot</b>, rechts <b style="color:#3fdc6a">grün</b>, unten <b style="color:#6b8cff">blau</b>, links <b style="color:#ffd23f">gelb</b>. Passt eine Seite nicht, den anderen Anfang oder die andere Richtung wählen.</div>
+<div>
+<svg id="mSvg" viewBox="0 0 520 330" role="img" aria-label="Rückseite des Fernsehers mit Klebeplan"></svg>
+<div class="wizres" id="mSum">…</div>
 </div>
-<svg id="wzSvg" viewBox="0 0 400 260" role="img" aria-label="Fernseher von vorne mit Startpunkt und Laufrichtung des Streifens">
-<rect x="60" y="40" width="280" height="158" rx="6" fill="#0b0d12" stroke="#3a4252" stroke-width="2"/>
-<text x="200" y="124" text-anchor="middle" fill="#8b93a3" font-size="13">Fernseher von vorne</text>
-<rect x="185" y="198" width="30" height="10" fill="#1a1d24"/><rect x="160" y="208" width="80" height="6" rx="2" fill="#1a1d24"/>
-<rect x="44" y="24" width="312" height="190" rx="10" fill="none" stroke="#2a2f3a" stroke-width="8"/>
-<g id="wzDots"></g><g id="wzArrow"></g>
-</svg>
 </div>
+<ol class="msteps" id="mSteps"></ol>
+<div class="btns"><button id="mApply" onclick="mApply()">Fertig geklebt – Einstellungen übernehmen</button><button class="sec" onclick="wzCheck()">Am Fernseher prüfen</button><button class="sec" onclick="test('edges')">Nur am Streifen prüfen</button></div>
+<div class="hint">„Übernehmen“ stellt die LED-Anzahl und Anfang/Richtung für den Fernseher ein. „Am Fernseher prüfen“ zeigt 60 s ein Testbild: oben <b style="color:#ff5a5a">rot</b>, rechts <b style="color:#3fdc6a">grün</b>, unten <b style="color:#6b8cff">blau</b>, links <b style="color:#ffd23f">gelb</b> (von vorne gesehen).</div>
+<details><summary>Anderer Anfang (z. B. unten in der Mitte) – Einstellung von Hand</summary>
+<div class="hint">Unter „Einstellungen → Fernseher“ lassen sich „Start-LED verschieben“ und „Laufrichtung umkehren“ direkt setzen.</div></details>
 </section>
 
-<section>
+<section data-tab="home">
 <h2>Status</h2>
 <div class="kv">
 <b>Fernseher</b><span id="sTv">–</span>
@@ -126,7 +139,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 </div>
 </section>
 
-<section>
+<section data-tab="home">
 <h2>Fernseher-App</h2>
 <div class="kv">
 <b>Bildquelle</b><span id="tBack">–</span>
@@ -140,7 +153,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint" id="tvPauseHint">Vor dem Neuinstallieren der TV-App drücken: die App hört auf aufzunehmen, damit die Bildaufnahme des Fernsehers beim Update nicht hängen bleibt. Nach dem Update „Weiter“ drücken (sonst läuft es nach 20 min von selbst weiter).</div>
 </section>
 
-<section>
+<section data-tab="home">
 <h2>Test</h2>
 <div class="hint">Testbilder laufen 60 s und haben Vorrang vor dem Fernseher.</div>
 <div class="btns">
@@ -154,7 +167,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint">„Richtung prüfen“: erste LED rot, zweite grün, jede 10. blau. So findest du Start und Laufrichtung des Streifens.</div>
 </section>
 
-<section>
+<section data-tab="set">
 <h2>LED-Streifen</h2>
 <label>Art des Streifens</label><select id="type" onchange="typeUi()"><option value="0">WS2812B – jede LED einzeln (echtes Ambilight)</option><option value="1">normaler RGB-Streifen (R, G, B, +) – eine Farbe für alles</option></select>
 <div id="rgbBox" style="display:none">
@@ -179,7 +192,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <button onclick="saveLed()">Speichern</button>
 </section>
 
-<section>
+<section data-tab="set">
 <h2>Fernseher-Einstellungen</h2>
 <div class="hint">Die TV-App holt sich diese Werte selbst ab. Leer = Standard der App.</div>
 <label>Menü &amp; Startseite einbeziehen</label>
@@ -199,7 +212,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="hint">Mapping und Menü-Modus wirken sofort. Werte, die du wieder leerst, gelten erst nach einem TV-Neustart wieder als Standard.</div>
 </section>
 
-<section>
+<section data-tab="sys">
 <h2>System &amp; Sicherheit</h2>
 <label>Gerätename (ergibt <code>name.local</code>)</label><input id="host">
 <label>Admin-Passwort (min. 6 Zeichen, leer = keins)</label><input id="admin" type="password" placeholder="unverändert lassen">
@@ -222,15 +235,23 @@ const $=id=>document.getElementById(id);
 const TVKEYS=['ui','gain','sat','alpha','floor','map','rev','test','uifps'];
 function toast(t){const m=$('msg');m.textContent=t;m.style.display='block';clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',2500)}
 const H={'X-AmbiSync':'1'};
-async function post(url,data){const r=await fetch(url,{method:'POST',headers:H,body:new URLSearchParams(data||{})});
+// Jede Anfrage mit Zeitlimit: geht eine Antwort im WLAN verloren, hängt die Seite nicht mehr fest
+let NETFAIL=0;
+async function fetchT(url,opt,ms){const c=new AbortController(),t=setTimeout(()=>c.abort(),ms||5000);
+ try{const r=await fetch(url,Object.assign({cache:'no-store',signal:c.signal},opt||{}));NETFAIL=0;netShow();return r}
+ catch(e){NETFAIL++;netShow();throw new Error(e.name==='AbortError'?'ESP32 antwortet nicht (Zeitlimit)':'keine Verbindung zum ESP32')}
+ finally{clearTimeout(t)}}
+function netShow(){const e=$('net');if(e)e.textContent=NETFAIL>=2?'⚠ Verbindung zum ESP32 wackelt – versuche weiter …':''}
+async function post(url,data){const r=await fetchT(url,{method:'POST',headers:H,body:new URLSearchParams(data||{})},8000);
  if(r.status==401)throw new Error('Passwort nötig');let j={};try{j=await r.json()}catch(e){}
  if(!r.ok||j.ok===false)throw new Error(j.error||('Fehler '+r.status));return j}
 function dot(c){return '<span class="dot '+c+'"></span>'}
 function fmtUp(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h+' h '+m+' min'}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 const BACK={video_plane:'Video-Ebene',ui_only:'nur Menü/Startseite','ppi(auto)':'Samsung-Farbmessung (Ersatz: geschützter Inhalt oder Video-Ebene hängt)','ppi(forced)':'Samsung-Farbmessung',file:'Bildschirmfoto'};
-async function refresh(){
- try{const s=await (await fetch('/api/status')).json();
+let refT=0;
+async function refresh(){clearTimeout(refT);
+ try{const s=await (await fetchT('/api/status',{},4000)).json();hero(s);
   $('hdr').textContent=(s.ap?'Einrichtungsmodus':s.host+'.local · '+s.ip)+' · Firmware '+s.fw;
   $('setup').style.display=s.ap?'block':'none';
   const tvOk=s.tvAgeMs>=0&&s.tvAgeMs<6000;
@@ -251,10 +272,26 @@ async function refresh(){
    $('tCov').textContent=Math.round((Number(u.applied)||0)*100)+' % eingemischt · '+Math.round((Number(u.coverage)||0)*100)+' % sichtbar';
    {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste 5 s halten, danach die App NICHT antippen.</b>':'')}
   }else ['tBack','tFps','tUi','tCov','tStat'].forEach(i=>$(i).textContent='–');
- }catch(e){$('hdr').textContent='keine Verbindung'}
+ }catch(e){if(NETFAIL>=3){$('hdr').textContent='keine Verbindung';heroSet('bad','Keine Verbindung zum ESP32','Ist er an und im WLAN? Seite neu laden, wenn es länger dauert.')}}
+ refT=setTimeout(refresh,document.visibilityState==='visible'?2000:6000)
 }
+// Ein Satz oben: läuft alles, oder was ist zu tun?
+function heroSet(c,t,d){const h=$('hero');h.className='full hero h-'+c;$('heroT').textContent=t;$('heroD').innerHTML=d||''}
+function hero(s){const wifi=(!s.ap&&s.rssi<-72)?' · <span style="color:var(--warn)">WLAN schwach ('+s.rssi+' dBm): ESP32 nicht hinter das Metall des Fernsehers legen, Antenne frei lassen.</span>':'';
+ if(s.ap)return heroSet('warn','Einrichtung: bitte dein WLAN wählen','Unten das Heim-WLAN antippen und verbinden.');
+ if(!s.ledOk)return heroSet('bad','LED-Ausgang hat einen Fehler','Unter „Einstellungen“ Daten-Pin und Streifen-Art prüfen.'+wifi);
+ if(s.test)return heroSet('warn','Testbild läuft','Endet nach 60 s von selbst oder mit „Test beenden“.'+wifi);
+ if(s.tvPaused)return heroSet('warn','Aufnahme der TV-App ist angehalten','Für ein Update vorbereitet. Danach „Weiter“ drücken.'+wifi);
+ if(s.tvAgeMs<0)return heroSet('warn','Der Fernseher hat sich noch nicht gemeldet','Fernseher einschalten. Die AmbiSync-App startet von selbst mit dem Fernseher (nicht antippen).'+wifi);
+ if(s.tvAgeMs>6000)return heroSet('warn','Fernseher seit '+Math.round(s.tvAgeMs/1000)+' s still','Ist er aus oder im Standby? Sonst findet die App den ESP32 gleich von selbst wieder.'+wifi);
+ const t=s.tv||{},st=String(t.status||''),fps=Number(t.fps)||0;
+ if(/rc=-2\b/.test(st))return heroSet('bad','Bildaufnahme im Fernseher hängt','Netzstecker des Fernsehers 60 s ziehen, danach die App nicht antippen. Vor App-Updates „Update vorbereiten“ drücken (Übersicht → Fernseher-App).'+wifi);
+ if(fps>0.5&&s.rt.active)return heroSet('ok','Läuft: '+fps.toFixed(0)+' Bilder/s vom Fernseher','Quelle: '+esc(BACK[t.backend]||t.backend||'')+' · LEDs gleiten über '+(s.rt.glideMs||0)+' ms'+wifi);
+ if(/rc=-4\b/.test(st))return heroSet('warn','Geschützter Inhalt','Die App versucht die Samsung-Farbmessung als Ersatz.'+wifi);
+ if(/rc=-1\b/.test(st))return heroSet('warn','Fernseher verbunden, gerade kein Video','Sobald ein Film oder Sender läuft, folgen die LEDs.'+wifi);
+ heroSet('warn','Fernseher verbunden, aber noch kein Bild',esc(st.slice(0,90))+wifi)}
 async function loadCfg(){
- const r=await fetch('/api/config',{headers:H});if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
+ let r;try{r=await fetchT('/api/config',{headers:H},6000)}catch(e){toast(e.message);setTimeout(loadCfg,3000);return}if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
  ['pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
@@ -267,6 +304,8 @@ async function loadCfg(){
 function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'none':'';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
 function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
+function tvParts(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);return parts.join(',')}
+function saveTvP(){return post('/api/config',{tv:tvParts()})}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}
 function saveSys(){const d={host:$('host').value,allow:$('allow').value};if($('admin').value)d.admin=$('admin').value;
@@ -294,14 +333,20 @@ function eye(id,b){const e=$(id);const show=e.type==='password';e.type=show?'tex
 let scanBusy=false;
 async function scan(force){if(scanBusy)return;scanBusy=true;clearTimeout(scanT);const box=$('nets');
  box.innerHTML='<div class="hint" style="padding:10px">suche WLAN-Netze … (dauert bis zu 5 Sekunden)</div>';
- try{const res=await fetch('/api/scan'+(force?'?refresh=1':''),{headers:H,cache:'no-store'});
+ try{const res=await fetchT('/api/scan'+(force?'?refresh=1':''),{headers:H},15000);
   if(!res.ok)throw new Error('Fehler '+res.status+': '+(await res.text()||res.statusText));
   const r=await res.json();NETS=r.list;renderNets();
   if(r.error&&!NETS.length)box.innerHTML='<div class="hint" style="padding:10px">Suche fehlgeschlagen (Code '+r.error+') – siehe Protokoll unten, „Neu suchen“ drücken</div>'}
  catch(e){box.innerHTML='<div class="hint" style="padding:10px">'+esc(e.message||e)+' – „Neu suchen“ drücken</div>'}
  scanBusy=false;loadLog()}
 let logOn=false;
-async function loadLog(){try{const t=await (await fetch('/api/log',{cache:'no-store'})).text();['log1','log2'].forEach(id=>{const e=$(id);if(!e)return;const end=e.scrollTop+e.clientHeight>=e.scrollHeight-20;e.textContent=t||'(leer)';if(end)e.scrollTop=e.scrollHeight})}catch(e){}}
+async function loadLog(){try{const t=await (await fetchT('/api/log',{},5000)).text();['log1','log2'].forEach(id=>{const e=$(id);if(!e)return;const end=e.scrollTop+e.clientHeight>=e.scrollHeight-20;e.textContent=t||'(leer)';if(end)e.scrollTop=e.scrollHeight})}catch(e){}}
+// ---- Reiter ----
+let TAB='home';
+function showTab(t){TAB=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ document.querySelectorAll('main>section[data-tab]').forEach(x=>x.hidden=x.dataset.tab!==t);
+ try{location.hash=t==='home'?'':t}catch(e){}if(t==='home')lvTick();if(t==='mount')mDraw()}
+$('tabs').onclick=e=>{const t=e.target.dataset&&e.target.dataset.t;if(t)showTab(t)};
 // ---- Live-Ansicht ----
 const NS='http://www.w3.org/2000/svg',TV={x:150,y:105,w:700,h:394};let LV={sig:'',dots:[],bands:[],glows:[],ring:null,ringGlow:null};
 function svgEl(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e}
@@ -358,39 +403,98 @@ function lvWhy(d){if(d.test)return['Testbild läuft',''];
  else b=st.slice(0,70);
  return[a,b]}
 
-// ---- Einbau-Assistent ----
-// Die TV-App verteilt die Zonen im Uhrzeigersinn (von vorne): oben links->rechts, rechts runter,
-// unten rechts->links, links hoch. Aus Anfang + Richtung ergeben sich "map" und "rev".
-const WZ={c:'',d:'',P:{tl:[44,24],tr:[356,24],br:[356,214],bl:[44,214],bm:[200,214]},
- DIRS:{tl:[['cw','nach rechts'],['ccw','nach unten']],tr:[['cw','nach unten'],['ccw','nach links']],br:[['cw','nach links'],['ccw','nach oben']],bl:[['cw','nach oben'],['ccw','nach rechts']],bm:[['cw','nach links'],['ccw','nach rechts']]},
- V:{'nach rechts':[1,0],'nach links':[-1,0],'nach oben':[0,-1],'nach unten':[0,1]}};
-function wzZones(){return Math.max(4,Number($('leds').value)||60)}
-function wzCalc(){const Z=wzZones();const W=16,Hh=9,P=2*W+2*Hh;let l=Math.max(1,Math.round(Z*Hh/P)),t=Math.max(1,Math.round(Z*W/P)),r=l,b=t;
- const c=[l,t,r,b];let s=l+t+r+b;while(s<Z){c[3]++;s++}while(s>Z&&c[3]>1){c[3]--;s--}
- const [L,T,R,B]=c;const idx={tl:0,tr:T,br:T+R,bl:T+R+B,bm:T+R+Math.floor(B/2)}[WZ.c];
- if(WZ.d==='cw')return{map:idx%Z,rev:0,L,T,R,B};return{map:(idx-1+Z)%Z,rev:1,L,T,R,B}}
-function wzDraw(){const dots=$('wzDots');dots.innerHTML='';
- for(const k in WZ.P){const [x,y]=WZ.P[k];const c=svgEl('circle',{cx:x,cy:y,r:k===WZ.c?11:8,fill:k===WZ.c?'#5b8cff':'#3a4252',stroke:'#0b0d12','stroke-width':2,style:'cursor:pointer'},dots);c.onclick=()=>wzCorner(k)}
- const a=$('wzArrow');a.innerHTML='';
- if(WZ.c&&WZ.d){const lab=WZ.DIRS[WZ.c].find(x=>x[0]===WZ.d)[1],[dx,dy]=WZ.V[lab],[x,y]=WZ.P[WZ.c],x2=x+dx*70,y2=y+dy*55;
-  svgEl('line',{x1:x,y1:y,x2:x2,y2:y2,stroke:'#3fbf7f','stroke-width':5,'stroke-linecap':'round'},a);
-  const ang=Math.atan2(dy,dx),hx2=x2+Math.cos(ang)*10,hy2=y2+Math.sin(ang)*10;
-  svgEl('polygon',{points:[hx2,hy2,x2+Math.cos(ang+2.5)*12,y2+Math.sin(ang+2.5)*12,x2+Math.cos(ang-2.5)*12,y2+Math.sin(ang-2.5)*12].join(','),fill:'#3fbf7f'},a);
-  const t=svgEl('text',{x:x+dx*14+(dy?16:0),y:y+dy*14+(dx?-14:5),fill:'#e9ecf1','font-size':13,'font-weight':600},a);t.textContent='Anfang'}}
-function wzCorner(c){WZ.c=c;WZ.d='';$('wzDir').innerHTML=WZ.DIRS[c].map(x=>'<button data-d="'+x[0]+'">'+x[1]+'</button>').join('');
- document.querySelectorAll('#wzCorner button').forEach(b=>b.classList.toggle('on',b.dataset.c===c));wzShow()}
-function wzShow(){document.querySelectorAll('#wzDir button').forEach(b=>b.classList.toggle('on',b.dataset.d===WZ.d));wzDraw();
- if(!WZ.c||!WZ.d){$('wzRes').textContent=WZ.c?'Jetzt die Richtung wählen.':'Bitte Anfang und Richtung wählen.';$('wzApply').disabled=true;return}
- const r=wzCalc();$('wzRes').innerHTML='Bei '+wzZones()+' LEDs verteilt der Fernseher etwa <b>'+r.T+'</b> oben, <b>'+r.R+'</b> rechts, <b>'+r.B+'</b> unten, <b>'+r.L+'</b> links.<br>Einstellung: Start-LED <b>'+r.map+'</b>, Richtung umkehren <b>'+(r.rev?'ja':'nein')+'</b>.';$('wzApply').disabled=false}
-$('wzCorner').onclick=e=>{const c=e.target.dataset&&e.target.dataset.c;if(c)wzCorner(c)};
-$('wzDir').onclick=e=>{const d=e.target.dataset&&e.target.dataset.d;if(d){WZ.d=d;wzShow()}};
-function wzApply(){const r=wzCalc();$('t_map').value=r.map;$('t_rev').value=String(r.rev);saveTv()}
+// ---- Einbau-Plan für Einsteiger ----
+// Die TV-App teilt N Zonen im Seitenverhältnis 16:9 auf (oben/unten T bzw. B, links/rechts L) und läuft von
+// VORNE gesehen im Uhrzeigersinn: oben links->rechts, rechts runter, unten rechts->links, links hoch.
+// Geklebt wird von HINTEN: dort sind links und rechts vertauscht. Der Plan rechnet beides um.
+const TVS={samsung65:[144.4,82.6]};
+function tvSize(){const v=$('mTv').value;if(v==='own')return[Number($('mW').value)||100,Number($('mH').value)||56];if(TVS[v])return TVS[v];
+ const d=Number(v)*2.54,w=d*16/Math.sqrt(337)+1.2,h=d*9/Math.sqrt(337)+1.2;return[Math.round(w*10)/10,Math.round(h*10)/10]}
+function split(Z){const W=16,Hh=9,P=2*W+2*Hh;let l=Math.max(1,Math.round(Z*Hh/P)),t=Math.max(1,Math.round(Z*W/P)),r=l,b=t;
+ const c=[l,t,r,b];let s=l+t+r+b;while(s<Z){c[3]++;s++}while(s>Z&&c[3]>1){c[3]--;s--}return{L:c[0],T:c[1],R:c[2],B:c[3]}}
+const M={start:'bl',dir:'up'};
+function mPlan(){const [W,H]=tvSize(),den=Number($('mDen').value)||60,inset=Math.max(0,Number($('mIn').value)||0),roll=Number($('mRoll').value)||5;
+ const tw=Math.max(10,W-2*inset),th=Math.max(10,H-2*inset);let N=Math.round((2*tw+2*th)/100*den);N=Math.max(8,Math.min(490,N));
+ const sp=split(N);
+ // Reihenfolge der Seiten von HINTEN gesehen. Start unten links (hinten) = unten rechts (vorne).
+ const sideName={top:'oben',bottom:'unten',left:'links',right:'rechts'};
+ let segs;const bl=M.start==='bl',up=M.dir==='up';
+ if(bl&&up)segs=[['left','nach oben'],['top','nach rechts'],['right','nach unten'],['bottom','nach links']];
+ else if(bl)segs=[['bottom','nach rechts'],['right','nach oben'],['top','nach links'],['left','nach unten']];
+ else if(up)segs=[['right','nach oben'],['top','nach links'],['left','nach unten'],['bottom','nach rechts']];
+ else segs=[['bottom','nach links'],['left','nach oben'],['top','nach rechts'],['right','nach unten']];
+ const cnt={top:sp.T,bottom:sp.B,left:sp.L,right:sp.R};
+ // map/rev (Ecke und Richtung von VORNE): hinten unten links = vorne unten rechts
+ const frontCorner=bl?'br':'bl';
+ const cw= bl?(!up):up;   // vorne br: nach links = Uhrzeigersinn, nach oben = gegen; vorne bl: nach oben = Uhrzeigersinn
+ const idx={br:sp.T+sp.R,bl:sp.T+sp.R+sp.B}[frontCorner];
+ const map=cw?idx%N:(idx-1+N)%N,rev=cw?0:1;
+ return{W,H,den,inset,roll,N,sp,segs,cnt,sideName,map,rev,need:N/den}}
+function cm(n,den){return (n/den*100).toFixed(1).replace('.',',')+' cm'}
+function mDraw(){const P=mPlan(),svg=$('mSvg');svg.innerHTML='';
+ const X=70,Y=40,Wd=380,Hd=Math.round(380*P.H/P.W),off=16;
+ svgEl('rect',{x:X,y:Y,width:Wd,height:Hd,rx:8,fill:'#0b0d12',stroke:'#3a4252','stroke-width':2},svg);
+ const tt=svgEl('text',{x:X+Wd/2,y:Y+Hd/2-6,'text-anchor':'middle',fill:'#8b93a3','font-size':13},svg);tt.textContent='Rückseite (du stehst dahinter)';
+ const t2=svgEl('text',{x:X+Wd/2,y:Y+Hd/2+14,'text-anchor':'middle',fill:'#5d6575','font-size':11},svg);t2.textContent=String(P.W).replace('.',',')+' × '+String(P.H).replace('.',',')+' cm';
+ const x0=X+off,y0=Y+off,x1=X+Wd-off,y1=Y+Hd-off;
+ const C={tl:[x0,y0],tr:[x1,y0],br:[x1,y1],bl:[x0,y1]};
+ const ends={left:{'nach oben':['bl','tl'],'nach unten':['tl','bl']},right:{'nach oben':['br','tr'],'nach unten':['tr','br']},top:{'nach rechts':['tl','tr'],'nach links':['tr','tl']},bottom:{'nach rechts':['bl','br'],'nach links':['br','bl']}};
+ P.segs.forEach((sg,i)=>{const [a,b]=ends[sg[0]][sg[1]],[ax,ay]=C[a],[bx,by]=C[b];
+  const g=6,dx=Math.sign(bx-ax),dy=Math.sign(by-ay);
+  svgEl('line',{x1:ax+dx*g,y1:ay+dy*g,x2:bx-dx*g,y2:by-dy*g,stroke:'#1d2321','stroke-width':9,'stroke-linecap':'round'},svg);
+  svgEl('line',{x1:ax+dx*g,y1:ay+dy*g,x2:bx-dx*g,y2:by-dy*g,stroke:'#e08a45','stroke-width':2,'stroke-dasharray':'2 6'},svg);
+  const mx=(ax+bx)/2,my=(ay+by)/2,ang=Math.atan2(by-ay,bx-ax);
+  svgEl('polygon',{points:[mx+Math.cos(ang)*9,my+Math.sin(ang)*9,mx+Math.cos(ang+2.4)*9,my+Math.sin(ang+2.4)*9,mx+Math.cos(ang-2.4)*9,my+Math.sin(ang-2.4)*9].join(','),fill:'#3fbf7f'},svg);
+  // Beschriftung außen
+  const side=sg[0],lx=side==='left'?X-8:side==='right'?X+Wd+8:mx,ly=side==='top'?Y-10:side==='bottom'?Y+Hd+20:my;
+  const an=side==='left'?'end':side==='right'?'start':'middle';
+  const bub=svgEl('g',{},svg);svgEl('circle',{cx:side==='left'?lx-58:side==='right'?lx+58:mx-70,cy:ly-4,r:9,fill:'#5b8cff'},bub);
+  const bt=svgEl('text',{x:side==='left'?lx-58:side==='right'?lx+58:mx-70,y:ly,'text-anchor':'middle',fill:'#fff','font-size':11,'font-weight':700},bub);bt.textContent=String(i+1);
+  const lt=svgEl('text',{x:side==='left'?lx-44:side==='right'?lx+44:mx-56,y:ly,'text-anchor':side==='left'?'end':'start',fill:'#e9ecf1','font-size':12},svg);
+  if(side==='left'){lt.setAttribute('x',lx);lt.setAttribute('text-anchor','end')}
+  if(side==='right'){lt.setAttribute('x',lx);lt.setAttribute('text-anchor','start')}
+  lt.textContent=(side==='left'||side==='right'?'':'')+P.cnt[side]+' LEDs';
+  if(side==='left'||side==='right'){const l2=svgEl('text',{x:lx,y:ly+15,'text-anchor':an,fill:'#8b93a3','font-size':11},svg);l2.textContent=cm(P.cnt[side],P.den);
+   bub.firstChild.setAttribute('cy',ly-26);bub.lastChild.setAttribute('y',ly-22);bub.firstChild.setAttribute('cx',side==='left'?lx-14:lx+14);bub.lastChild.setAttribute('x',side==='left'?lx-14:lx+14)}
+  else{lt.setAttribute('x',mx-56);lt.textContent=P.cnt[side]+' LEDs · '+cm(P.cnt[side],P.den)}
+  // Schnittstelle am Ende (außer nach der letzten Seite: dort ist nur der Rest)
+  const sx=bx,sy=by;svgEl('circle',{cx:sx,cy:sy,r:5,fill:'none',stroke:'#e2566a','stroke-width':2},svg)});
+ // Start + ESP32
+ const sc=C[P.segs[0][0]==='left'?'bl':P.segs[0][0]==='right'?'br':(P.segs[0][1]==='nach rechts'?'bl':'br')];
+ svgEl('circle',{cx:sc[0],cy:sc[1],r:10,fill:'#3fbf7f',stroke:'#0b0d12','stroke-width':2},svg);
+ const ex=sc[0]<X+Wd/2?sc[0]+18:sc[0]-88,ey=sc[1]-44;
+ svgEl('rect',{x:ex,y:ey,width:70,height:26,rx:5,fill:'#14324f',stroke:'#5b8cff'},svg);
+ const et=svgEl('text',{x:ex+35,y:ey+17,'text-anchor':'middle',fill:'#dfe7ef','font-size':12,'font-weight':600},svg);et.textContent='ESP32';
+ svgEl('line',{x1:sc[0],y1:sc[1],x2:ex+(sc[0]<X+Wd/2?0:70),y2:ey+13,stroke:'#3fbf7f','stroke-width':2},svg);
+ const st=svgEl('text',{x:sc[0],y:sc[1]+28,'text-anchor':'middle',fill:'#3fbf7f','font-size':12,'font-weight':700},svg);st.textContent='Start';
+ // Zusammenfassung + Schritte
+ const enough=P.need<=P.roll+0.001;
+ $('mSum').innerHTML='Du brauchst <b>'+P.N+' LEDs</b> = <b>'+(P.need).toFixed(2).replace('.',',')+' m</b> Streifen'+(enough?' (Rolle reicht, Rest '+(P.roll-P.need).toFixed(2).replace('.',',')+' m).':' <b style="color:var(--bad)">– deine Rolle reicht nicht!</b> Abstand vom Rand größer machen oder zweite Rolle.')+
+  '<br>Der rote Kreis ● markiert jede Schnittstelle. Der Fernseher bekommt automatisch: '+P.N+' LEDs, Start-LED '+P.map+', Richtung umkehren '+(P.rev?'ja':'nein')+'.';
+ const st0=P.segs[0];
+ let h='<li><b>Vorbereiten:</b> Fernseher mit dem Bildschirm nach unten auf eine weiche Decke legen oder von hinten gut erreichbar machen. Klebefläche mit etwas Spiritus/Alkohol entfetten.</li>';
+ h+='<li><b>Start:</b> Das Streifen-Ende <b>mit dem Kabel</b> (Aufdruck <b>Din</b>, der kleine Pfeil auf dem Streifen zeigt vom Kabel weg) kommt <b>'+(M.start==='bl'?'unten links':'unten rechts')+'</b> in die Ecke, '+String(P.inset).replace('.',',')+' cm vom Rand. Dort sitzt auch das ESP32.</li>';
+ P.segs.forEach((sg,i)=>{h+='<li><b>Seite '+(i+1)+' ('+P.sideName[sg[0]]+'):</b> Streifen '+sg[1]+' kleben, genau <b>'+P.cnt[sg[0]]+' LEDs</b> ('+cm(P.cnt[sg[0]],P.den)+'). '+(i<3?'Nach der '+P.cnt[sg[0]]+'. LED an den Kupferfeldern mit der Schere <b>abschneiden</b>.':'Nach der '+P.cnt[sg[0]]+'. LED abschneiden, der Rest der Rolle wird nicht gebraucht.')+'</li>';
+  if(i<3)h+='<li><b>Ecke '+(i+1)+':</b> Das nächste Stück um die Ecke ansetzen, Pfeil wieder <b>vom Start weg</b>. Die drei Kupferfelder verbinden: <b>+5V</b> an +5V, <b>DO</b> an <b>Din</b>, <b>GND</b> an GND (kurze Drähte löten oder Eckverbinder).</li>'});
+ h+='<li><b>Anschließen:</b> wie im Schaltplan (Netzteil an den losen roten/weißen Draht am Start, Grün an RX2/GPIO16, Weiß an GND am ESP32).</li>';
+ h+='<li><b>Übernehmen</b> drücken (unten), dann <b>Am Fernseher prüfen</b>: von vorne oben rot, rechts grün, unten blau, links gelb.</li>';
+ $('mSteps').innerHTML=h;
+ document.querySelectorAll('#mStart button').forEach(b=>b.classList.toggle('on',b.dataset.v===M.start));
+ document.querySelectorAll('#mDir button').forEach(b=>b.classList.toggle('on',b.dataset.v===M.dir));
+ $('mOwn').style.display=$('mTv').value==='own'?'':'none';
+ try{localStorage.setItem('amb.mount',JSON.stringify({tv:$('mTv').value,w:$('mW').value,h:$('mH').value,den:$('mDen').value,roll:$('mRoll').value,ins:$('mIn').value,start:M.start,dir:M.dir}))}catch(e){}}
+$('mStart').onclick=e=>{const v=e.target.dataset&&e.target.dataset.v;if(v){M.start=v;mDraw()}};
+$('mDir').onclick=e=>{const v=e.target.dataset&&e.target.dataset.v;if(v){M.dir=v;mDraw()}};
+['mTv','mW','mH','mDen','mRoll','mIn'].forEach(id=>{$(id).addEventListener('input',mDraw);$(id).addEventListener('change',mDraw)});
+try{const m=JSON.parse(localStorage.getItem('amb.mount')||'null');if(m){$('mTv').value=m.tv;$('mW').value=m.w;$('mH').value=m.h;$('mDen').value=m.den;$('mRoll').value=m.roll;$('mIn').value=m.ins;M.start=m.start||'bl';M.dir=m.dir||'up'}}catch(e){}
+async function mApply(){const P=mPlan();
+ try{await post('/api/config',{leds:P.N});$('leds').value=P.N;$('t_map').value=P.map;$('t_rev').value=String(P.rev);await saveTvP();toast('Übernommen: '+P.N+' LEDs, Start '+P.map+(P.rev?', umgekehrt':''))}catch(e){toast(e.message)}}
 function wzCheck(){$('t_test').value='1';saveTv();setTimeout(()=>{$('t_test').value='';saveTv()},60000)}
-wzDraw();
-let lvT=0;async function lvTick(){clearTimeout(lvT);if(document.visibilityState==='visible'){try{const r=await fetch('/api/leds',{cache:'no-store'});if(r.ok)lvDraw(await r.json())}catch(e){}}lvT=setTimeout(lvTick,150)}
-lvTick();
-refresh();loadCfg().then(()=>{});setInterval(refresh,1500);
-fetch('/api/status').then(r=>r.json()).then(s=>{if(s.ap){scan(0);setInterval(loadLog,2000)}}).catch(e=>{$('nets').innerHTML='<div class="hint" style="padding:10px">ESP32 antwortet nicht: '+esc(e.message)+'</div>'});
+mDraw();
+let lvT=0;async function lvTick(){clearTimeout(lvT);if(document.visibilityState==='visible'&&TAB==='home'){try{const r=await fetchT('/api/leds',{},3000);if(r.ok)lvDraw(await r.json())}catch(e){}}lvT=setTimeout(lvTick,NETFAIL?1500:300)}
+showTab(['mount','set','sys'].includes(location.hash.slice(1))?location.hash.slice(1):'home');
+refresh();loadCfg().then(()=>{mDraw()});
+fetchT('/api/status',{},5000).then(r=>r.json()).then(s=>{if(s.ap){scan(0);setInterval(loadLog,2000)}}).catch(e=>{$('nets').innerHTML='<div class="hint" style="padding:10px">ESP32 antwortet nicht: '+esc(e.message)+'</div>'});
 document.querySelectorAll('details').forEach(d=>d.addEventListener('toggle',()=>{if(d.open&&d.querySelector('pre.log'))loadLog()}));
 loadLog();
 </script></body></html>

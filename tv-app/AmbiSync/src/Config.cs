@@ -276,7 +276,7 @@ namespace TizenAmbilight
             c.Floor = PrefDouble("floor", 0);
             if (c.Floor < 0) c.Floor = 0;
             if (c.Floor > 255) c.Floor = 255;
-            c.StaleMs = PrefDouble("staleMs", 6000);
+            c.StaleMs = PrefDouble("staleMs", 60000);   // AmbiSync: 6 s liess ruhige Szenen "atmen"
             if (c.StaleMs < 0) c.StaleMs = 0;
             c.StaleLevel = PrefDouble("staleLevel", 0.35);
             if (c.StaleLevel < 0) c.StaleLevel = 0;

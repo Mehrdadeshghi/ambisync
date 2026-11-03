@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.1.1"
+#define FW_VERSION "1.2.0"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -264,6 +264,14 @@ static volatile uint32_t realtimeTimeoutMs = 0;  // 0 = nie ablaufen
 static std::atomic<uint32_t> rtPackets{0}, rtRejected{0}, rtFrames{0};
 static volatile uint32_t rtSourceIp = 0;          // IPv4 als Zahl (thread-sicher)
 static const char *volatile rtProtocol = "-";
+
+// Wie lange ein Paket "gilt": das Timeout aus dem Paket plus Spielraum. Ohne Spielraum blendete der
+// ESP32 kurz Richtung Leerlauf, sobald ein Paket bei langsamer Bildquelle oder schwachem WLAN etwas
+// später kam, und die LEDs "atmeten" bei jedem Bild.
+uint32_t rtAllowMs() {
+  uint32_t grace = (uint32_t)max(1500.0f, 3.0f * (float)frameIntervalMs);
+  return realtimeTimeoutMs + grace;
+}
 
 // Testbilder (haben Vorrang vor allem anderen, solange aktiv)
 enum TestMode { TEST_NONE, TEST_EDGES, TEST_FIRST, TEST_WHITE, TEST_RAINBOW, TEST_OFF };
@@ -600,7 +608,7 @@ void renderTask(void *) {
     // ---- Quelle wählen ----
     uint32_t lrt = lastRealtimeMs;
     int32_t rtAge = (int32_t)(t0 - lrt);
-    bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || rtAge < (int32_t)realtimeTimeoutMs);
+    bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || rtAge < (int32_t)rtAllowMs());
     int tm = testMode;
     if (tm != TEST_NONE && testUntilMs && (int32_t)(t0 - testUntilMs) > 0) { testMode = TEST_NONE; tm = TEST_NONE; }
 
@@ -624,7 +632,7 @@ void renderTask(void *) {
       }
       idleFade = 0;
     } else {
-      idleFade += ((rt ? 0.0f : 1.0f) - idleFade) * 0.08f;   // ~0,5 s Übergang
+      idleFade += ((rt ? 0.0f : 1.0f) - idleFade) * (rt ? 0.15f : 0.03f);   // zurück schnell, ausblenden ~1,5 s
       uint8_t ir = (cfg.idleColor >> 16) & 0xFF, ig = (cfg.idleColor >> 8) & 0xFF, ib = cfg.idleColor & 0xFF;
       if (cfg.idleMode == 0) { ir = ig = ib = 0; }
       else { ir = ir * cfg.idleBrightness / 255; ig = ig * cfg.idleBrightness / 255; ib = ib * cfg.idleBrightness / 255; }
@@ -806,7 +814,7 @@ void handleStatus() {
   uint32_t lrt = lastRealtimeMs;
   int32_t rtAge = lrt ? (int32_t)(now - lrt) : -1;
   if (lrt && rtAge < 0) rtAge = 0;
-  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || rtAge < (int32_t)realtimeTimeoutMs);
+  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || rtAge < (int32_t)rtAllowMs());
   String j = "{";
   j += "\"fw\":\"" FW_VERSION "\",";
   j += "\"ap\":" + String(apMode ? "true" : "false") + ",";
@@ -978,6 +986,9 @@ void handleTvControl() {
   String body = cfg.tvTokens;
   // Plug & Play: die TV-App übernimmt die LED-Anzahl sofort, ohne Neustart (außer sie ist dort fest eingestellt)
   if (cfg.stripType == 0 && tokenInt(cfg.tvTokens, "leds", -1) < 0) body = body.length() ? body + ",leds=" + String(cfg.ledCount) : "leds=" + String(cfg.ledCount);
+  // Die TV-App dimmt ab Werk nach 6 s ohne Bildänderung auf 35 % und springt bei jeder kleinen Änderung
+  // zurück: ruhige Szenen "atmen". Erst nach 60 s Standbild (Pause, geschlossenes Video) abdunkeln.
+  if (tokenInt(cfg.tvTokens, "stale", -1) < 0) body = body.length() ? body + ",stale=60000" : String("stale=60000");
   if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
   else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
   server.send(200, "text/plain", body);
@@ -1076,7 +1087,7 @@ void handleLeds() {
     }
   }
   uint32_t now = millis(), lrt = lastRealtimeMs;
-  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
+  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   String j; j.reserve(n * 12 + 400);
   j += "{\"n\":" + String(n) + ",\"type\":" + String(cfg.stripType) + ",\"zones\":" + String(atoi(tvz) > 0 ? atoi(tvz) : n);
   j += ",\"map\":" + String(tokenInt(cfg.tvTokens, "map", 0)) + ",\"rev\":" + String(tokenInt(cfg.tvTokens, "rev", 0));
@@ -1191,6 +1202,10 @@ bool tryWifi(const String &ssid, const String &pass) {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(cfg.hostname.c_str());
   WiFi.setSleep(false);   // kein Stromsparen: sonst ruckelt der UDP-Empfang
+  // alle Kanäle absuchen und den Zugangspunkt mit dem besten Signal nehmen (wichtig bei FritzBox-Mesh
+  // und Repeatern: sonst bleibt der ESP32 am ersten gefundenen, oft weit entfernten hängen)
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(ssid.c_str(), pass.c_str());
   LOG("WLAN: verbinde mit \"%s\" (max. 20 s) ...", ssid.c_str());
   uint32_t t0 = millis();
@@ -1206,7 +1221,9 @@ bool tryWifi(const String &ssid, const String &pass) {
     return false;
   }
   WiFi.setAutoReconnect(true);
-  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel());
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);   // volle Sendeleistung
+  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d, Zugangspunkt %s", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel(), WiFi.BSSIDstr().c_str());
+  if (WiFi.RSSI() < -70) LOG("WLAN: Signal schwach. Tipp: ESP32 nicht hinter das Metall des Fernsehers und nicht direkt an den LED-Streifen legen, Antenne (Ende mit der Zickzack-Leiterbahn) frei lassen.");
   LOG("Weboberfläche: http://%s  oder  http://%s.local", WiFi.localIP().toString().c_str(), cfg.hostname.c_str());
   return true;
 }
@@ -1254,7 +1271,7 @@ void onWifiEvent(arduino_event_id_t ev, arduino_event_info_t info) {
 void printStatus() {
   uint32_t now = millis();
   uint32_t lrt = lastRealtimeMs;
-  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
+  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   uint32_t tvMs = tvStatusMs;
   char ledDesc[96];
   if (cfg.stripType == 1)
@@ -1430,7 +1447,7 @@ void logEvents() {
   static int tvWas = 0;   // 0 nie, 1 verbunden, 2 still
   static uint32_t lastRej = 0;
   uint32_t now = millis(), lrt = lastRealtimeMs;
-  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)realtimeTimeoutMs);
+  bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   if (rt && (!rtWas || rtSourceIp != srcWas)) LOG("Farben: Empfang gestartet – %s von %s", (const char *)rtProtocol, IPAddress(rtSourceIp).toString().c_str());
   if (!rt && rtWas) LOG("Farben: Empfang beendet (Zeitüberschreitung) -> %s", cfg.idleMode ? "Leerlauf-Farbe" : "LEDs aus");
   rtWas = rt; srcWas = rtSourceIp;
