@@ -68,6 +68,14 @@ Ist das Heim-WLAN beim Einschalten nicht erreichbar, etwa weil der Router nach e
 
 Ports: 21324 Farben (WLED DRGB/DNRGB/WARLS), 4048 DDP, 21325 Status der TV-App, 21326 Suche, 21327 Selbstmeldung des ESP32.
 
+## Qualität messen
+
+`tools/measure/ambimeter.py` wertet ein Handy-Video aus (Fernseher und Wand im Bild) und liefert, wie schnell und wie weich das Licht dem Bild folgt. Anleitung und bisherige Messungen: [docs/QUALITAET.md](docs/QUALITAET.md).
+
+## Bildmodi
+
+In der Weboberfläche oben: **Film** (Standard, weich ohne spürbare Verzögerung), **Sport** (schneller, kräftigere Farben), **Spiel** (so direkt wie möglich), **Ruhig** (langsames Hintergrundlicht) und **Eigene** (Regler „Weiche Übergänge“ und eigene Werte). Der ESP32 stellt dafür sein Überblenden und die Reaktion/Sättigung der TV-App gemeinsam ein.
+
 ## 4. TV-App bauen
 
 Der Ordner liegt in einem (privaten) GitHub-Repo. Bei jedem Push baut GitHub die App: unter **Actions → Build → Artifacts** findest du `AmbiSync-tv-app`. Bei einem Tag `v1.0.0` entsteht zusätzlich ein **Release**.

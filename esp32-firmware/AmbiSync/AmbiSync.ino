@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.2.5"
+#define FW_VERSION "1.3.0"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -141,7 +141,8 @@ struct Settings {
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
   int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
   int dither = 1;             // 1 = zeitliches Dithering (feinere dunkle Übergänge)
-  int wbR = 100, wbG = 100, wbB = 88;   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
+  int wbR = 100, wbG = 100, wbB = 88;
+  int mode = 0;               // Bildmodus: 0 Film, 1 Sport, 2 Spiel, 3 Ruhig, 4 Eigene (Regler + eigene Werte)   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
   int idleMode = 0;           // 0 aus, 1 feste Farbe
   uint32_t idleColor = 0x201000;
   int idleBrightness = 64;
@@ -181,6 +182,7 @@ void loadSettings() {
   cfg.wbR = constrain(prefs.getInt("wbR", 100), 0, 100);
   cfg.wbG = constrain(prefs.getInt("wbG", 100), 0, 100);
   cfg.wbB = constrain(prefs.getInt("wbB", 88), 0, 100);
+  cfg.mode = constrain(prefs.getInt("mode", 0), 0, 4);
   cfg.idleMode = constrain(prefs.getInt("idle", 0), 0, 1);
   cfg.idleColor = prefs.getUInt("idleCol", 0x201000);
   cfg.idleBrightness = constrain(prefs.getInt("idleBri", 64), 0, 255);
@@ -206,6 +208,7 @@ void saveSettings() {
   prefs.putInt("mAch", cfg.mAPerChannel);
   prefs.putInt("smooth", cfg.smoothing);
   prefs.putInt("dither", cfg.dither);
+  prefs.putInt("mode", cfg.mode);
   prefs.putInt("wbR", cfg.wbR); prefs.putInt("wbG", cfg.wbG); prefs.putInt("wbB", cfg.wbB);
   prefs.putInt("idle", cfg.idleMode);
   prefs.putUInt("idleCol", cfg.idleColor);
@@ -269,6 +272,16 @@ static volatile uint32_t realtimeTimeoutMs = 0;  // 0 = nie ablaufen
 static std::atomic<uint32_t> rtPackets{0}, rtRejected{0}, rtFrames{0};
 static volatile uint32_t rtSourceIp = 0;          // IPv4 als Zahl (thread-sicher)
 static const char *volatile rtProtocol = "-";
+
+// ---- Bildmodi: je eine abgestimmte Kombination aus Überblenden (ESP32) und Reaktion/Sättigung (TV-App) ----
+struct ModePreset { const char *name; int smooth; float alpha, afast, sat; };
+static const ModePreset MODES[4] = {
+  {"Film",  40, 0.50f, 0.85f, 1.10f},   // weich, aber ohne spürbare Verzögerung (Standard)
+  {"Sport", 20, 0.70f, 0.95f, 1.15f},   // schnell, kräftige Farben
+  {"Spiel",  5, 0.90f, 1.00f, 1.00f},   // so direkt wie möglich
+  {"Ruhig", 80, 0.20f, 0.50f, 1.00f},   // gemütliches Hintergrundlicht, langsame Wechsel
+};
+int effSmoothing() { return cfg.mode < 4 ? MODES[cfg.mode].smooth : cfg.smoothing; }
 
 // Wie lange ein Paket "gilt": das Timeout aus dem Paket plus Spielraum. Ohne Spielraum blendete der
 // ESP32 kurz Richtung Leerlauf, sobald ein Paket bei langsamer Bildquelle oder schwachem WLAN etwas
@@ -660,10 +673,11 @@ void renderTask(void *) {
         // Abstand zum vorigen Bild direkt nehmen (nicht den trägen Mittelwert): springt die Bildrate des
         // Fernsehers, würde sonst zu kurz überblendet und dann gehalten -> Stufen
         float iv = constrain((lastGapMs > 0 && lastGapMs < 1500) ? (float)lastGapMs : frameIntervalMs, 16.0f, 1000.0f);
-        float g = iv * (cfg.smoothing / 40.0f);              // Standard 40 % = genau ein Bildabstand
+        int sm = effSmoothing();
+        float g = iv * (sm / 40.0f);                         // Standard 40 % = genau ein Bildabstand
         // Obergrenze, damit langsame Bildquellen (Samsung-Farbmessung, schwaches WLAN) keine spürbare
         // Verzögerung bekommen: Standard 40 % -> höchstens 160 ms
-        g = min(g, 40.0f + cfg.smoothing * 3.0f);
+        g = min(g, 40.0f + sm * 3.0f);
         if (meanDiff > 40.0f) { g = min(g, 60.0f); sceneCuts++; }
         glideMs = g;
         glideMsNow = g;
@@ -881,6 +895,7 @@ void handleGetConfig() {
   j += "\"mAch\":" + String(cfg.mAPerChannel) + ",";
   j += "\"smooth\":" + String(cfg.smoothing) + ",";
   j += "\"dither\":" + String(cfg.dither) + ",";
+  j += "\"mode\":" + String(cfg.mode) + ",";
   j += "\"wbR\":" + String(cfg.wbR) + ",\"wbG\":" + String(cfg.wbG) + ",\"wbB\":" + String(cfg.wbB) + ",";
   j += "\"idle\":" + String(cfg.idleMode) + ",";
   char col[8]; snprintf(col, sizeof(col), "#%06X", (unsigned)(cfg.idleColor & 0xFFFFFF));
@@ -935,6 +950,7 @@ void handleSetConfig() {
   cfg.mAPerChannel = argInt("mAch", cfg.mAPerChannel, 1, 60);
   cfg.smoothing = argInt("smooth", cfg.smoothing, 0, 95);
   cfg.dither = argInt("dither", cfg.dither, 0, 1);
+  cfg.mode = argInt("mode", cfg.mode, 0, 4);
   cfg.wbR = argInt("wbR", cfg.wbR, 0, 100); cfg.wbG = argInt("wbG", cfg.wbG, 0, 100); cfg.wbB = argInt("wbB", cfg.wbB, 0, 100);
   cfg.idleMode = argInt("idle", cfg.idleMode, 0, 1);
   if (server.hasArg("idleCol")) {
@@ -1003,9 +1019,16 @@ void handleTvControl() {
   // zurück: ruhige Szenen "atmen". Erst nach 60 s Standbild (Pause, geschlossenes Video) abdunkeln.
   // Reaktion der TV-App (alpha) folgt dem Regler "Weiche Übergänge": Standard 40 % -> alpha 0.5.
   // Die App-Vorgabe 0.25 hinkte bei normalen Farbwechseln eine halbe Sekunde hinterher.
-  if ((String(",") + cfg.tvTokens + ",").indexOf(",alpha=") < 0) {
-    float a = constrain(0.9f - cfg.smoothing / 100.0f, 0.15f, 0.9f);
-    body = body.length() ? body + ",alpha=" + String(a, 2) : "alpha=" + String(a, 2);
+  String tk = String(",") + cfg.tvTokens + ",";
+  auto add = [&](const char *k, float v) {
+    if (tk.indexOf(String(",") + k + "=") >= 0) return;   // von Hand gesetzt: hat Vorrang
+    body = body.length() ? body + "," + k + "=" + String(v, 2) : String(k) + "=" + String(v, 2);
+  };
+  if (cfg.mode < 4) {
+    const ModePreset &m = MODES[cfg.mode];
+    add("alpha", m.alpha); add("afast", m.afast); add("sat", m.sat);
+  } else {
+    add("alpha", constrain(0.9f - cfg.smoothing / 100.0f, 0.15f, 0.9f));
   }
   // Ersatz-Bildquelle (Samsung-Farbmessung, bei DRM-Inhalten): ab Werk 24 Messpunkte nacheinander mit je
   // 40 ms Wartezeit -> jeder Punkt nur ~1x pro Sekunde neu, die LEDs springen dann im Sekundentakt.

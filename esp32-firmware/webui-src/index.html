@@ -47,13 +47,15 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 .hero{display:grid;gap:4px;border-left:4px solid var(--mute)}.hero.h-ok{border-left-color:var(--ok)}.hero.h-warn{border-left-color:var(--warn)}.hero.h-bad{border-left-color:var(--bad)}
 .hero-t{font-size:18px;font-weight:600}.hero-d{color:var(--mute);font-size:14px}
 .net-st{font-size:12px;color:var(--warn)}
+.modes{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;font-size:13px;color:var(--mute)}.modes button{margin:0;padding:6px 12px;background:#2a3140}.modes button.on{background:var(--acc)}
 .msteps{margin:14px 0 0;padding-left:22px;display:grid;gap:8px;font-size:14px}.msteps b{color:#fff}
 .msteps li::marker{color:var(--acc);font-weight:700}
 </style></head><body>
 <header><h1>AmbiSync</h1><small id="hdr">verbinde …</small><span id="net" class="net-st"></span></header>
 <nav class="tabs" id="tabs"><button data-t="home" class="on">Übersicht</button><button data-t="mount">Einbau</button><button data-t="set">Einstellungen</button><button data-t="sys">System</button></nav>
 <main>
-<section class="full hero" id="hero" data-tab="home"><div class="hero-t" id="heroT">verbinde mit dem ESP32 …</div><div class="hero-d" id="heroD"></div></section>
+<section class="full hero" id="hero" data-tab="home"><div class="hero-t" id="heroT">verbinde mit dem ESP32 …</div><div class="hero-d" id="heroD"></div>
+<div class="modes" id="modes"><span>Bildmodus:</span><button data-m="0" title="weich, ohne spürbare Verzögerung">Film</button><button data-m="1" title="schnell, kräftige Farben">Sport</button><button data-m="2" title="so direkt wie möglich">Spiel</button><button data-m="3" title="gemütliches Hintergrundlicht">Ruhig</button><button data-m="4" title="Regler „Weiche Übergänge“ und eigene Werte">Eigene</button></div></section>
 
 <section id="setup" class="full" style="display:none">
 <h2>Einrichtung: Heim-WLAN</h2>
@@ -185,7 +187,8 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <div class="row"><div><label>Max. Strom (mA, 0 = aus)</label><input id="maxmA" type="number" min="0" step="500"></div>
 <div><label>mA pro Farbkanal</label><input id="mAch" type="number" min="1" max="60"></div></div>
 <div class="hint">Strombegrenzung schützt Netzteil und Streifen: z. B. 5-V-Netzteil mit 15 A → 13000 mA eintragen.</div>
-<label>Weiche Übergänge <span id="smV"></span></label><input id="smooth" type="range" min="0" max="95" oninput="smV.textContent=this.value+' %'">
+<input type="hidden" id="mode">
+<label>Weiche Übergänge <span id="smV"></span> <small id="smMode" style="color:var(--warn)"></small></label><input id="smooth" type="range" min="0" max="95" oninput="smV.textContent=this.value+' %'">
 <div class="hint">Regelt, wie schnell die LEDs dem Bild folgen. 40 % = schnell und trotzdem weich (empfohlen), 0 % = sofort, mehr = ruhiger, aber mit Verzögerung. Szenenwechsel springen immer sofort.</div>
 <label>Weißabgleich des Streifens (%)</label>
 <div class="row" style="grid-template-columns:1fr 1fr 1fr"><div><input id="wbR" type="number" min="0" max="100" title="Rot"></div><div><input id="wbG" type="number" min="0" max="100" title="Grün"></div><div><input id="wbB" type="number" min="0" max="100" title="Blau"></div></div>
@@ -300,8 +303,8 @@ function hero(s){const wifi=(!s.ap&&s.rssi<-72)?' · <span style="color:var(--wa
 async function loadCfg(){
  let r;try{r=await fetchT('/api/config',{headers:H},6000)}catch(e){toast(e.message);setTimeout(loadCfg,3000);return}if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
- $('briV').textContent=Math.round(c.bri/2.55)+' %';$('smV').textContent=c.smooth+' %';
+ ['pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
+ $('briV').textContent=Math.round(c.bri/2.55)+' %';modeShow(c.mode);$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
  const tv={},extra=[];
@@ -309,7 +312,7 @@ async function loadCfg(){
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
 }
 function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'none':'';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
-function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function tvParts(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);return parts.join(',')}
 function saveTvP(){return post('/api/config',{tv:tvParts()})}
@@ -348,6 +351,11 @@ async function scan(force){if(scanBusy)return;scanBusy=true;clearTimeout(scanT);
  scanBusy=false;loadLog()}
 let logOn=false;
 async function loadLog(){try{const t=await (await fetchT('/api/log',{},5000)).text();['log1','log2'].forEach(id=>{const e=$(id);if(!e)return;const end=e.scrollTop+e.clientHeight>=e.scrollHeight-20;e.textContent=t||'(leer)';if(end)e.scrollTop=e.scrollHeight})}catch(e){}}
+// ---- Bildmodus ----
+function modeShow(m){m=Number(m);document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===m));
+ $('mode').value=m;$('smMode').textContent=m<4?'(wirkt nur im Bildmodus „Eigene“)':''}
+$('modes').onclick=e=>{const m=e.target.dataset&&e.target.dataset.m;if(m==null)return;modeShow(m);
+ post('/api/config',{mode:m}).then(()=>toast('Bildmodus: '+e.target.textContent)).catch(x=>toast(x.message))};
 // ---- Reiter ----
 let TAB='home';
 function showTab(t){TAB=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
