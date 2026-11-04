@@ -106,6 +106,9 @@ namespace TizenAmbilight
                     // AmbiSync: "file" (schreibt jedes Bild als Datei) ist über den Steuerkanal nicht wählbar.
                     case "backend": cfg.CaptureBackend = (iv == 2) ? PpiCapture.BackendName : VideoPlaneCapture.BackendName;
                                     L("backend switched to " + cfg.CaptureBackend); break;
+                    // AmbiSync Bluetooth-Test: blemac = Adresse des ESP32 als Zahl, ble=1 schaltet um
+                    case "blemac":  if (dv > 0 && dv < 281474976710656.0) BleLink.MacNum = (long)dv; break;
+                    case "ble":     if (dv == 0 || dv == 1) BleLink.SetWanted(dv != 0); break;
                     case "ppibars": if (dv == 0 || dv == 1) PpiCapture.BarsEnabled = dv != 0; break;
                     case "ppigrid": if (dv == 1) PpiCapture.GridRequest = 1; break;
                     case "pfresh":  if (iv == 1 || iv == 2) PpiCapture.FreshRequest = iv; break;

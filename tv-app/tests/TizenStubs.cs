@@ -12,3 +12,24 @@ namespace Tizen.Applications
         public static void Set(string k, object v) { }
     }
 }
+
+namespace TizenAmbilight
+{
+    // Bluetooth-Attrappe für die PC-Tests: merkt sich alle geschriebenen Stücke.
+    sealed class FakeBle : IBleTransport
+    {
+        public static int MtuSim = 517;
+        public static bool FailConnect;
+        public static readonly System.Collections.Generic.List<byte[]> Written = new System.Collections.Generic.List<byte[]>();
+        bool _c;
+        public int Mtu => MtuSim;
+        public bool Connected => _c;
+        public bool Connect(string mac, out string err) { err = FailConnect ? "Attrappe: aus" : null; _c = !FailConnect; return _c; }
+        public bool Write(byte[] d, out string err) { err = null; lock (Written) Written.Add(d); return true; }
+        public void Close() { _c = false; }
+    }
+    static partial class BleLink
+    {
+        static IBleTransport CreateTransport() { return new FakeBle(); }
+    }
+}

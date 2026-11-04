@@ -180,6 +180,31 @@ static class UiTests
             Check("Letterbox erkannt, +2 px Rand", !unk && t == 72 && b == 468, "t=" + t + " b=" + b);
         }
 
+        // ---- Bluetooth: Bild in DNRGB-Stücke ----
+        {
+            int leds = 253;
+            var drgb = new byte[2 + leds * 3]; drgb[0] = 2; drgb[1] = 2;
+            for (int i = 0; i < leds * 3; i++) drgb[2 + i] = (byte)(i % 251);
+            var ch = TizenAmbilight.BleLink.Chunks(drgb, drgb.Length, 514);
+            bool okc = ch.Length == 2 && ch[0].Length == 4 + 170 * 3 && ch[1][0] == 4 && ch[1][2] == 0 && ch[1][3] == 170 && ch[1].Length == 4 + 83 * 3
+                       && ch[1][4] == drgb[2 + 170 * 3] && ch[0][1] == 2;
+            Check("Bild wird in 2 Bluetooth-Pakete zerlegt (MTU 517)", okc, "n=" + ch.Length);
+            var ch23 = TizenAmbilight.BleLink.Chunks(drgb, drgb.Length, 20);
+            Check("kleine MTU: 5 LEDs je Paket", ch23.Length == 51 && ch23[50][3] == 250, "n=" + ch23.Length);
+            Check("Adresse aus Zahl", TizenAmbilight.BleLink.MacString(0x24DCC3A1B2C4L) == "24:DC:C3:A1:B2:C4", TizenAmbilight.BleLink.MacString(0x24DCC3A1B2C4L));
+
+            TizenAmbilight.BleLink.MacNum = 0x24DCC3A1B2C4L;
+            TizenAmbilight.BleLink.SetWanted(true);
+            for (int i = 0; i < 50 && TizenAmbilight.BleLink.State != "connected"; i++) Thread.Sleep(20);
+            TizenAmbilight.BleLink.Offer(drgb, drgb.Length);
+            for (int i = 0; i < 50 && TizenAmbilight.FakeBle.Written.Count < 2; i++) Thread.Sleep(20);
+            Check("Bluetooth verbindet und schreibt ein Bild", TizenAmbilight.BleLink.State == "connected" && TizenAmbilight.FakeBle.Written.Count == 2 && TizenAmbilight.BleLink.Active,
+                  "state=" + TizenAmbilight.BleLink.State + " n=" + TizenAmbilight.FakeBle.Written.Count);
+            TizenAmbilight.BleLink.SetWanted(false);
+            for (int i = 0; i < 100 && TizenAmbilight.BleLink.State != "off"; i++) Thread.Sleep(20);
+            Check("Bluetooth aus -> WLAN", !TizenAmbilight.BleLink.Active && TizenAmbilight.BleLink.State == "off", TizenAmbilight.BleLink.State);
+        }
+
         Console.WriteLine(fails == 0 ? "ALLE TESTS BESTANDEN" : fails + " TEST(S) FEHLGESCHLAGEN");
         Environment.Exit(fails == 0 ? 0 : 1);
     }

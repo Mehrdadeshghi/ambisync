@@ -72,7 +72,7 @@ jobs:
           arduino-cli core install esp32:esp32@3.3.12
       - name: Firmware bauen
         run: |
-          arduino-cli compile --fqbn esp32:esp32:${{ matrix.board }} --warnings default \
+          arduino-cli compile --fqbn esp32:esp32:${{ matrix.board }}:PartitionScheme=min_spiffs --warnings default \
             --output-dir build esp32-firmware/AmbiSync
           mkdir -p dist
           cp build/AmbiSync.ino.merged.bin dist/AmbiSync-${{ matrix.board }}-komplett.bin

@@ -140,3 +140,15 @@ MIT. Die TV-App basiert auf TizenAmbilight von Ritwick Verma (MIT, siehe `tv-app
 ## Weboberfläche ändern
 
 Die Seite liegt in `esp32-firmware/webui-src/index.html`. Nach einer Änderung `python3 esp32-firmware/tools/make_webui.py` ausführen. Das Skript erzeugt `AmbiSync/webui.h` als gzip-komprimierte Byte-Liste. Als Text-Konstante würde die Arduino IDE JavaScript-Zeilen wie `async function refresh(){` für C++-Funktionen halten und Code mitten in die Seite schreiben.
+
+## Bluetooth-Test (ab 1.6)
+
+Statt per WLAN kann der Fernseher die Farben per Bluetooth LE zum ESP32 schicken. Ab Werk aus; einschalten in der
+Weboberfläche (Übersicht → Fernseher-App → „Bluetooth-Test starten“, der ESP32 startet neu). Die TV-App verbindet sich
+dann von selbst, schickt jedes Bild in 2 Bluetooth-Paketen (WLED-DNRGB) und nimmt automatisch wieder WLAN, wenn
+Bluetooth nicht klappt. Weboberfläche, Einstellungen und Updates laufen weiter über WLAN.
+
+- Firmware ab 1.5 braucht mehr Platz: in der Arduino IDE **Werkzeuge → Partition Scheme → „Minimal SPIFFS (1.9MB APP
+  with OTA)“** wählen und einmal per USB flashen. Ein Update über die Weboberfläche von einer älteren Firmware passt nicht.
+- Bluetooth und WLAN teilen sich im ESP32 eine Antenne; mit Bluetooth an läuft das WLAN im Stromsparmodus.
+- Ob der Fernseher Bluetooth für Apps freigibt, zeigt die Zeile „Bluetooth am TV“.

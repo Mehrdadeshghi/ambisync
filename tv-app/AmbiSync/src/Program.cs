@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.5.0 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.6.0 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -928,7 +928,11 @@ namespace TizenAmbilight
                                                                     // schon fertiges RGB, dort verschluckte er dunkle Töne
                                                                     (st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal) ? Math.Min(cfg.Black, 3.0) : cfg.Black,
                                                                     cfg.MapOffset, cfg.MapReverse, cfg.LedCount);
-                        string err = WledOutput.Send(cfg.WledIp, cfg.WledPort, payload);
+                        // AmbiSync Bluetooth-Test: per Bluetooth, solange die Verbindung steht; sonst wie immer per WLAN
+                        string err = null;
+                        if (BleLink.Active) BleLink.Offer(payload, payload.Length);
+                        else err = WledOutput.Send(cfg.WledIp, cfg.WledPort, payload);
+                        if (BleLink.Wanted && !BleLink.Active) BleLink.Offer(payload, payload.Length);   // hält den Faden mit Bildern versorgt
                         if (err == null) { st.SendOk++; st.LastSendErr = null; }
                         else { st.SendFail++; st.LastSendErr = err; if (st.SendFail % 20 == 1) L("wled send: " + err); }
                     }

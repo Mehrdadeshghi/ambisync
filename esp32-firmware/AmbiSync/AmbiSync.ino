@@ -27,6 +27,22 @@
 #include <atomic>
 #include "webui.h"
 
+// Bluetooth-Test: die TV-App kann die Farben per Bluetooth LE statt per WLAN schicken (Einstellung "ble",
+// ab Werk aus). Braucht mehr Speicher: in der Arduino IDE Partition Scheme "Minimal SPIFFS (1.9MB APP with OTA)".
+#ifndef AMBI_BLE
+#define AMBI_BLE 1
+#endif
+#if AMBI_BLE
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <esp_mac.h>
+#endif
+static volatile bool bleConnected = false;
+static volatile uint32_t bleWrites = 0, bleBytes = 0, bleConnects = 0;
+static bool bleRunning = false;
+static uint64_t bleMacNum = 0;      // eigene Bluetooth-Adresse als Zahl (geht so durch den Steuerkanal)
+static char bleMacStr[18] = "";
+
 // Vorwärtsdeklarationen (Funktionen werden vor ihrer Definition benutzt)
 bool pinSafe(int p);
 int defaultPin();
@@ -99,7 +115,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.4.0"
+#define FW_VERSION "1.5.0"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -140,6 +156,7 @@ struct Settings {
   int maxCurrent = 10000;     // mA, 0 = keine Begrenzung
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
   int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
+  int ble = 0;                // 1 = Farben vom TV per Bluetooth LE annehmen (Test)
   int dither = 0;             // 1 = zeitliches Dithering (feinere Stufen, kann flimmern); 0 = Flacker-Filter
   int wbR = 100, wbG = 100, wbB = 88;
   int mode = 0;               // Bildmodus: 0 Film, 1 Sport, 2 Spiel, 3 Ruhig, 4 Eigene (Regler + eigene Werte)   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
@@ -178,6 +195,7 @@ void loadSettings() {
   { int v = prefs.getInt("maxmA", 10000); cfg.maxCurrent = v < 0 ? 0 : v; }
   cfg.mAPerChannel = constrain(prefs.getInt("mAch", 20), 1, 60);
   cfg.smoothing = constrain(prefs.getInt("smooth", 40), 0, 95);
+  cfg.ble = prefs.getInt("ble", 0) ? 1 : 0;
   cfg.dither = prefs.getInt("dith2", 0) ? 1 : 0;   // neuer Schlüssel: ab 1.4 standardmäßig aus (Flacker-Filter statt Dithering)
   cfg.wbR = constrain(prefs.getInt("wbR", 100), 0, 100);
   cfg.wbG = constrain(prefs.getInt("wbG", 100), 0, 100);
@@ -207,6 +225,7 @@ void saveSettings() {
   prefs.putInt("maxmA", cfg.maxCurrent);
   prefs.putInt("mAch", cfg.mAPerChannel);
   prefs.putInt("smooth", cfg.smoothing);
+  prefs.putInt("ble", cfg.ble);
   prefs.putInt("dith2", cfg.dither);
   prefs.putInt("mode", cfg.mode);
   prefs.putInt("wbR", cfg.wbR); prefs.putInt("wbG", cfg.wbG); prefs.putInt("wbB", cfg.wbB);
@@ -261,10 +280,10 @@ static portMUX_TYPE frameMux = portMUX_INITIALIZER_UNLOCKED;
 // Position und Geschwindigkeit bleiben. Dadurch gibt es kein Neustarten pro Bild, keine Stufen und kein
 // "Verrücktwerden", wenn zwei Szenen kurz nacheinander kommen. Gerechnet wird exakt (nicht schrittweise
 // angenähert), also stabil bei jeder Bildrate.
-static float springPos[MAX_LEDS * 3];
-static float springVel[MAX_LEDS * 3];
-static float lastOutF[MAX_LEDS * 3];         // Flacker-Filter: zuletzt ausgegebener Wert je Kanal
-static float ditherAcc[MAX_LEDS * 3];        // Rest für das (optionale) zeitliche Dithering
+static float *springPos;   // im Heap (Bluetooth braucht den festen Speicher)
+static float *springVel;   // im Heap (Bluetooth braucht den festen Speicher)
+static float *lastOutF;   // im Heap. Flacker-Filter: zuletzt ausgegebener Wert je Kanal
+static float *ditherAcc;   // im Heap. Rest für das (optionale) zeitliche Dithering
 static volatile float frameIntervalMs = 40;  // gemessener Abstand der TV-Bilder (gleitender Mittelwert)
 static volatile float glideMsNow = 120;      // Reaktionszeit (50 %) für die Statusseite
 
@@ -503,12 +522,18 @@ void noteRealtime(const IPAddress &src, uint8_t timeoutSec, const char *proto) {
   rtFrames++;
 }
 
+void handleRealtime(const uint8_t *d, size_t n, const IPAddress &src, bool viaBle);
+
 void onRealtime(AsyncUDPPacket &pkt) {
   rtPackets++;
   if (!sourceAllowed(pkt.remoteIP())) { rtRejected++; return; }
-  const uint8_t *d = pkt.data();
-  size_t n = pkt.length();
+  handleRealtime(pkt.data(), pkt.length(), pkt.remoteIP(), false);
+}
+
+// gemeinsamer Empfang für WLAN (UDP) und Bluetooth (gleiches WLED-Format)
+void handleRealtime(const uint8_t *d, size_t n, const IPAddress &srcIp, bool viaBle) {
   if (n < 2) return;
+  struct PktSrc { IPAddress ip; bool ble; IPAddress remoteIP() const { return ip; } } pkt{srcIp, viaBle};
   uint8_t proto = d[0], tmo = d[1];
   switch (proto) {
     case 1: {  // WARLS: [1, t, (idx, r, g, b)*]
@@ -518,21 +543,25 @@ void onRealtime(AsyncUDPPacket &pkt) {
         if (led < MAX_LEDS) { target[led * 3] = d[i + 1]; target[led * 3 + 1] = d[i + 2]; target[led * 3 + 2] = d[i + 3]; }
       }
       portEXIT_CRITICAL(&frameMux);
-      noteRealtime(pkt.remoteIP(), tmo, "WARLS");
+      noteRealtime(pkt.remoteIP(), tmo, pkt.ble ? "WARLS/BT" : "WARLS");
       break;
     }
     case 2:  // DRGB: [2, t, (r, g, b)*]
       storeRange(d + 2, 0, (n - 2) / 3, 3);
-      noteRealtime(pkt.remoteIP(), tmo, "DRGB");
+      noteRealtime(pkt.remoteIP(), tmo, pkt.ble ? "DRGB/BT" : "DRGB");
       break;
     case 3:  // DRGBW: [3, t, (r, g, b, w)*]
       storeRange(d + 2, 0, (n - 2) / 4, 4);
-      noteRealtime(pkt.remoteIP(), tmo, "DRGBW");
+      noteRealtime(pkt.remoteIP(), tmo, pkt.ble ? "DRGBW/BT" : "DRGBW");
       break;
     case 4:  // DNRGB: [4, t, startHi, startLo, (r, g, b)*]
       if (n < 4) return;
       storeRange(d + 4, (d[2] << 8) | d[3], (n - 4) / 3, 3);
-      noteRealtime(pkt.remoteIP(), tmo, "DNRGB");
+      // DNRGB kommt per Bluetooth in Stücken (je Schreibvorgang max. ~500 Byte): erst das Stück mit der
+      // letzten LED zählt als ganzes Bild, sonst stimmen Bilder/s und Zeitmessung nicht.
+      if (!pkt.ble || (size_t)((d[2] << 8) | d[3]) + (n - 4) / 3 >= (size_t)cfg.ledCount)
+        noteRealtime(pkt.remoteIP(), tmo, pkt.ble ? "DNRGB/BT" : "DNRGB");
+      else lastRealtimeMs = millis() | 1;
       break;
     default:
       break;
@@ -866,6 +895,10 @@ void handleStatus() {
   j += "\"limiting\":" + String(limiting ? "true" : "false") + ",";
   j += "\"test\":" + String(testMode) + ",";
   j += "\"tvPaused\":" + String(tvPaused() ? "true" : "false") + ",";
+  j += "\"ble\":{\"on\":" + String(cfg.ble ? "true" : "false") + ",\"running\":" + String(bleRunning ? "true" : "false") +
+       ",\"connected\":" + String(bleConnected ? "true" : "false") + ",\"writes\":" + String((uint32_t)bleWrites) +
+       ",\"bytes\":" + String((uint32_t)bleBytes) + ",\"connects\":" + String((uint32_t)bleConnects) +
+       ",\"mac\":\"" + String(bleMacStr) + "\",\"built\":" + String(AMBI_BLE ? "true" : "false") + "},";
   static char tvCopy[1401];
   portENTER_CRITICAL(&tvMux);
   memcpy(tvCopy, tvStatusBuf, sizeof(tvCopy));
@@ -894,6 +927,7 @@ void handleGetConfig() {
   j += "\"mAch\":" + String(cfg.mAPerChannel) + ",";
   j += "\"smooth\":" + String(cfg.smoothing) + ",";
   j += "\"dither\":" + String(cfg.dither) + ",";
+  j += "\"ble\":" + String(cfg.ble) + ",";
   j += "\"mode\":" + String(cfg.mode) + ",";
   j += "\"wbR\":" + String(cfg.wbR) + ",\"wbG\":" + String(cfg.wbG) + ",\"wbB\":" + String(cfg.wbB) + ",";
   j += "\"idle\":" + String(cfg.idleMode) + ",";
@@ -949,6 +983,7 @@ void handleSetConfig() {
   cfg.mAPerChannel = argInt("mAch", cfg.mAPerChannel, 1, 60);
   cfg.smoothing = argInt("smooth", cfg.smoothing, 0, 95);
   cfg.dither = argInt("dither", cfg.dither, 0, 1);
+  if (server.hasArg("ble")) { int b = argInt("ble", cfg.ble, 0, 1); if (b != cfg.ble) { cfg.ble = b; reboot = true; } }
   cfg.mode = argInt("mode", cfg.mode, 0, 4);
   cfg.wbR = argInt("wbR", cfg.wbR, 0, 100); cfg.wbG = argInt("wbG", cfg.wbG, 0, 100); cfg.wbB = argInt("wbB", cfg.wbB, 0, 100);
   cfg.idleMode = argInt("idle", cfg.idleMode, 0, 1);
@@ -1033,10 +1068,62 @@ void handleTvControl() {
   if (tokenInt(cfg.tvTokens, "pz", -1) < 0) body = body.length() ? body + ",pz=10" : String("pz=10");
   if (tokenInt(cfg.tvTokens, "psleep", -99) == -99) body = body.length() ? body + ",psleep=17" : String("psleep=17");
   if (tokenInt(cfg.tvTokens, "stale", -1) < 0) body = body.length() ? body + ",stale=60000" : String("stale=60000");
+  // Bluetooth-Test: TV-App soll die Farben per Bluetooth schicken (Adresse als Zahl, Tokens sind nur Zahlen)
+  if (tokenInt(cfg.tvTokens, "ble", -1) < 0) {
+    String b = (cfg.ble && bleRunning) ? String("ble=1,blemac=") + String((unsigned long long)bleMacNum) : String("ble=0");
+    body = body.length() ? body + "," + b : b;
+  }
   if (tvPaused()) body = body.length() ? body + ",pause" : String("pause");
   else if (body.indexOf("pause") < 0) body = body.length() ? body + ",run" : String("run");
   server.send(200, "text/plain", body);
 }
+
+
+// ---- Bluetooth-Test: Farben per Bluetooth LE ----
+// Eigener Dienst mit einer beschreibbaren Eigenschaft. Jeder Schreibvorgang ist ein normales WLED-Paket
+// (DNRGB: [4, Zeitlimit, StartHi, StartLo, R,G,B ...]), also derselbe Weg wie per WLAN.
+#define BLE_SVC_UUID "a3b5f001-7a6d-4b1e-9c2f-616d62690001"
+#define BLE_CHR_UUID "a3b5f002-7a6d-4b1e-9c2f-616d62690001"
+
+#if AMBI_BLE
+class AmbiBleServerCb : public BLEServerCallbacks {
+  void onConnect(BLEServer *) override { bleConnected = true; bleConnects++; }
+  void onDisconnect(BLEServer *) override { bleConnected = false; BLEDevice::startAdvertising(); }
+};
+class AmbiBleChrCb : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    size_t n = c->getLength();
+    if (n < 2) return;
+    bleWrites++; bleBytes += n;
+    rtPackets++;
+    handleRealtime(c->getData(), n, IPAddress(rtSourceIp), true);
+  }
+};
+
+void bleStart() {
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_BT);
+  bleMacNum = 0;
+  for (int i = 0; i < 6; i++) bleMacNum = (bleMacNum << 8) | mac[i];
+  snprintf(bleMacStr, sizeof(bleMacStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  if (!BLEDevice::init("AmbiSync")) { LOG("Bluetooth: Start fehlgeschlagen"); return; }
+  BLEDevice::setMTU(517);
+  BLEServer *srv = BLEDevice::createServer();
+  srv->setCallbacks(new AmbiBleServerCb());
+  BLEService *svc = srv->createService(BLE_SVC_UUID);
+  BLECharacteristic *chr = svc->createCharacteristic(BLE_CHR_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  chr->setCallbacks(new AmbiBleChrCb());
+  svc->start();
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  adv->addServiceUUID(BLE_SVC_UUID);
+  adv->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  bleRunning = true;
+  LOG("Bluetooth: an, Adresse %s, wartet auf den Fernseher (Speicher frei %u KB)", bleMacStr, (unsigned)(ESP.getFreeHeap() / 1024));
+}
+#else
+void bleStart() { LOG("Bluetooth: in dieser Firmware nicht enthalten (AMBI_BLE=0)"); }
+#endif
 
 // ---- WLAN-Suche (synchron, dauert 2–5 s; Ergebnis wird zwischengespeichert) ----
 static String scanJson = "[]";
@@ -1245,7 +1332,8 @@ void startAp() {
 bool tryWifi(const String &ssid, const String &pass) {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(cfg.hostname.c_str());
-  WiFi.setSleep(false);   // kein Stromsparen: sonst ruckelt der UDP-Empfang
+  // kein Stromsparen: sonst ruckelt der UDP-Empfang. Mit Bluetooth MUSS es an sein (sonst stürzt der Funk-Treiber ab).
+  WiFi.setSleep(cfg.ble && AMBI_BLE ? true : false);
   // alle Kanäle absuchen und den Zugangspunkt mit dem besten Signal nehmen (wichtig bei FritzBox-Mesh
   // und Repeatern: sonst bleibt der ESP32 am ersten gefundenen, oft weit entfernten hängen)
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
@@ -1546,6 +1634,11 @@ void setup() {
   WiFi.onEvent(onWifiEvent);
   memset(target, 0, sizeof(target));
 
+  springPos = (float *)calloc(MAX_LEDS * 3, sizeof(float));
+  springVel = (float *)calloc(MAX_LEDS * 3, sizeof(float));
+  lastOutF = (float *)calloc(MAX_LEDS * 3, sizeof(float));
+  ditherAcc = (float *)calloc(MAX_LEDS * 3, sizeof(float));
+  if (!springPos || !springVel || !lastOutF || !ditherAcc) { LOG("FEHLER: zu wenig Speicher"); delay(2000); ESP.restart(); }
   xTaskCreatePinnedToCore(renderTask, "render", 8192, nullptr, 3, nullptr, 1);
 
   if (!connectWifi()) startAp();
@@ -1558,6 +1651,7 @@ void setup() {
 
   udpRt.listen(PORT_REALTIME);
   udpRt.onPacket(onRealtime);
+  if (cfg.ble) bleStart();
   udpDdp.listen(PORT_DDP);
   udpDdp.onPacket(onDdp);
   udpTv.listen(PORT_TVSTATUS);

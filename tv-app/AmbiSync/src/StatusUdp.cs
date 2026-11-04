@@ -55,6 +55,14 @@ namespace TizenAmbilight
                     Num(sb, "zones", cfg.ZoneCount); sb.Append(',');
                     Num(sb, "uptime", (now - st.RunStart).TotalSeconds); sb.Append(',');
                     Str(sb, "bt", BtProbe.Result); sb.Append(',');
+                    sb.Append("\"ble\":{");
+                    Str(sb, "state", BleLink.Wanted ? BleLink.State : "off"); sb.Append(',');
+                    Str(sb, "err", Trunc(BleLink.Err, 80)); sb.Append(',');
+                    Num(sb, "mtu", BleLink.Mtu); sb.Append(',');
+                    Num(sb, "fps", BleLink.Active ? BleLink.Fps : 0); sb.Append(',');
+                    Num(sb, "ms", Math.Round(BleLink.LastFrameMs, 1)); sb.Append(',');
+                    Num(sb, "frames", BleLink.Frames); sb.Append(',');
+                    Num(sb, "fails", BleLink.Fails); sb.Append("},");
                     sb.Append("\"ppi\":{");
                     Num(sb, "slots", PpiCapture.Slots); sb.Append(',');
                     Num(sb, "pz", PpiCapture.PzRequested); sb.Append(',');

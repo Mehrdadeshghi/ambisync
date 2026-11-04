@@ -11,5 +11,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../AmbiSync/src/*.cs" />
+    <Compile Remove="../AmbiSync/src/BleTransport.cs" />
   </ItemGroup>
 </Project>

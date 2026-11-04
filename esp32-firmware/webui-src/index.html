@@ -151,8 +151,11 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <b>Status</b><span id="tStat" style="word-break:break-word">–</span>
 <b>Ersatzquelle</b><span id="tPpi">–</span>
 <b>Bluetooth am TV</b><span id="tBt">–</span>
+<b>Farben kommen per</b><span id="tLink">–</span>
 </div>
 <div class="hint">Diese Werte schickt die TV-App alle 2 s. Es werden keine Bilder übertragen.</div>
+<div class="btns"><button class="sec" id="bleBtn" onclick="bleToggle()">Bluetooth-Test starten</button></div>
+<div class="hint" id="bleHint">Test: der Fernseher schickt die Farben per Bluetooth statt per WLAN. Der ESP32 startet dafür neu. Klappt die Verbindung nicht, nimmt die App automatisch wieder WLAN. Einstellungen und Updates laufen weiter über WLAN.</div>
 <div class="btns"><button class="sec" id="tvPauseBtn" onclick="tvPause()">Update vorbereiten</button></div>
 <div class="hint" id="tvPauseHint">Vor dem Neuinstallieren der TV-App drücken: die App hört auf aufzunehmen, damit die Bildaufnahme des Fernsehers beim Update nicht hängen bleibt. Nach dem Update „Weiter“ drücken (sonst läuft es nach 20 min von selbst weiter).</div>
 </section>
@@ -279,9 +282,12 @@ async function refresh(){clearTimeout(refT);
    $('tUi').innerHTML=u.running?dot('ok')+esc(u.mode)+(u.alphaSeen?' · Transparenz erkannt':'')+' · '+esc(u.w)+'×'+esc(u.h):dot(u.mode=='off'?'':'warn')+(u.mode=='off'?'aus':'nicht aktiv'+(u.err?': '+esc(u.err):''));
    $('tCov').textContent=Math.round((Number(u.applied)||0)*100)+' % eingemischt · '+Math.round((Number(u.coverage)||0)*100)+' % sichtbar';
    {const bt=String(t.bt||'');$('tBt').innerHTML=!bt?'– (TV-App vor 1.2.1)':(/le=1/.test(bt)&&/gattc=1/.test(bt)?dot('ok')+'Bluetooth LE für Apps vorhanden':dot('')+'kein Bluetooth LE für Apps')+' <small style="color:var(--mute)">'+esc(bt)+'</small>'}
+   {const b=t.ble||{};$('tLink').innerHTML=b.state==='connected'?dot('ok')+'Bluetooth · '+(Number(b.fps)||0).toFixed(1)+' Bilder/s · '+b.ms+' ms je Bild · MTU '+b.mtu:(s.ble&&s.ble.on?dot('warn')+'WLAN (Bluetooth: '+esc(b.state||'TV-App vor 1.5')+(b.err?' – '+esc(b.err):'')+')':'WLAN')}
    {const pp=t.ppi||{};$('tPpi').textContent=String(t.backend||'').startsWith('ppi')?(pp.pz+' Punkte, Umlauf '+pp.ringMs+' ms ('+(pp.ringMs>0?(1000/pp.ringMs).toFixed(1):'?')+'×/s), '+pp.slots+' parallel, '+pp.settle+' ms Wartezeit'):'– (nur bei geschütztem Inhalt)'}
    {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste 5 s halten, danach die App NICHT antippen.</b>':'')}
-  }else ['tBack','tFps','tUi','tCov','tStat','tBt','tPpi'].forEach(i=>$(i).textContent='–');
+  }else ['tBack','tFps','tUi','tCov','tStat','tBt','tPpi','tLink'].forEach(i=>$(i).textContent='–');
+  {const b=s.ble||{};BLEON=!!b.on;$('bleBtn').textContent=BLEON?'Bluetooth-Test beenden (zurück zu WLAN)':'Bluetooth-Test starten';$('bleBtn').style.display=b.built===false?'none':'';
+   if(BLEON)$('bleHint').innerHTML='ESP32: '+(b.running?(b.connected?dot('ok')+'Fernseher per Bluetooth verbunden':dot('warn')+'wartet auf den Fernseher')+' · Adresse '+esc(b.mac)+' · '+b.writes+' Pakete':dot('bad')+'Bluetooth konnte nicht starten (Speicher?)')}
  }catch(e){if(NETFAIL>=3){$('hdr').textContent='keine Verbindung';heroSet('bad','Keine Verbindung zum ESP32','Ist er an und im WLAN? Seite neu laden, wenn es länger dauert.')}}
  refT=setTimeout(refresh,document.visibilityState==='visible'?2000:6000)
 }
@@ -315,6 +321,9 @@ function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'non
 function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function tvParts(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);return parts.join(',')}
+let BLEON=false;
+async function bleToggle(){if(!confirm(BLEON?'Bluetooth-Test beenden? Der ESP32 startet neu.':'Bluetooth-Test starten? Der ESP32 startet neu, danach verbindet sich der Fernseher per Bluetooth.'))return;
+ try{await post('/api/config',{ble:BLEON?0:1});toast('ESP32 startet neu …')}catch(e){toast(e.message)}}
 function saveTvP(){return post('/api/config',{tv:tvParts()})}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
  post('/api/config',{tv:parts.join(',')}).then(()=>{toast('An Fernseher gesendet');loadCfg()}).catch(e=>toast(e.message))}
