@@ -630,47 +630,57 @@ namespace TizenAmbilight
         /// <summary>Find the active picture area HORIZONTALLY (strip pillarbox bars). Mirrors
         /// DetectActiveArea with the same guards: bars capped at a quarter of the width each, slivers
         /// below MinBarPx ignored, and never collapse the picture below a third of the frame.</summary>
-        public static void DetectActiveAreaX(byte[] y, int w, int h, int thr, out int xLeft, out int xRight)
+        public static void DetectActiveAreaX(byte[] y, int w, int h, int thr, out int xLeft, out int xRight, out bool unknown)
         {
             int step = 8;
             int maxBar = w / 4;
             xLeft = 0; xRight = w;
+            unknown = false;
 
             int l = 0;
             while (l < maxBar && ColIsBar(y, l, w, h, step, thr)) l++;
+            if (l >= maxBar) unknown = true;          // AmbiSync: (fast) schwarzes Bild = unbekannt, nicht "keine Balken"
             xLeft = (l >= maxBar) ? 0 : l;
 
             int r = w - 1, run = 0;
             while (run < maxBar && r > 0 && ColIsBar(y, r, w, h, step, thr)) { r--; run++; }
+            if (run >= maxBar) unknown = true;
             xRight = (run >= maxBar) ? w : (r + 1);
 
-            if (xRight - xLeft < w / 3) { xLeft = 0; xRight = w; }   // never collapse the picture
-            if (xLeft < MinBarPx) xLeft = 0;
-            if (w - xRight < MinBarPx) xRight = w;
+            if (xRight - xLeft < w / 3) { xLeft = 0; xRight = w; unknown = true; }   // never collapse the picture
+            if (xLeft < MinBarPx) xLeft = 0; else xLeft += BlurPx;
+            if (w - xRight < MinBarPx) xRight = w; else xRight -= BlurPx;
         }
 
-        public static void DetectActiveArea(byte[] y, int w, int h, int thr, out int yTop, out int yBottom)
+        /// <summary>AmbiSync: Rand zwischen Balken und Bild ist durch Skalierung weich; wie HyperHDR (blurRemoveCnt)
+        /// ein paar Pixel mehr abschneiden, sonst mischt die erste Zonenzeile das Schwarz mit hinein.</summary>
+        public const int BlurPx = 2;
+
+        public static void DetectActiveArea(byte[] y, int w, int h, int thr, out int yTop, out int yBottom, out bool unknown)
         {
             int step = 8;
             int maxBar = h / 4;
             yTop = 0; yBottom = h;
+            unknown = false;
 
             int t = 0;
             while (t < maxBar && RowIsBar(y, t, w, step, thr)) t++;
+            if (t >= maxBar) unknown = true;          // AmbiSync: (fast) schwarzes Bild = unbekannt
             yTop = (t >= maxBar) ? 0 : t;
 
             int b = h - 1;
             int run = 0;
             while (run < maxBar && b > 0 && RowIsBar(y, b, w, step, thr)) { b--; run++; }
+            if (run >= maxBar) unknown = true;
             yBottom = (run >= maxBar) ? h : (b + 1);
 
-            if (yBottom - yTop < h / 3) { yTop = 0; yBottom = h; }   // sanity: never collapse the picture
+            if (yBottom - yTop < h / 3) { yTop = 0; yBottom = h; unknown = true; }   // sanity: never collapse the picture
 
             // Tiny "bars" are noise, not letterboxing. A 2-3 px sliver usually means a dark row at the
             // very top/bottom of the picture, and cropping to it only shifts the sampling window for no
             // benefit - which shows up as the strip twitching.
-            if (yTop < MinBarPx) yTop = 0;
-            if (h - yBottom < MinBarPx) yBottom = h;
+            if (yTop < MinBarPx) yTop = 0; else yTop += BlurPx;
+            if (h - yBottom < MinBarPx) yBottom = h; else yBottom -= BlurPx;
         }
 
         static bool RowIsBar(byte[] y, int row, int w, int step, int thr)

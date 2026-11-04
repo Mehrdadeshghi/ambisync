@@ -39,6 +39,24 @@ Quellen: `schema-smoothing.json` von Hyperion.ng (type linear, time_ms 150, upda
 (HybridRgbInterpolator, time_ms 150, updateFrequency 50, stiffness 150, damping 26, antiFlickeringFilter),
 `InfiniteHybridRgbInterpolator.cpp` und `LedDevice.cpp` (Flacker-Filter) aus dem HyperHDR-Quellcode (MIT).
 
+## TV-App: Bildauswertung im Vergleich (ab 1.5)
+
+| | HyperHDR / Hyperion.ng | AmbiSync bis 1.4 | AmbiSync ab 1.5 |
+|---|---|---|---|
+| Helligkeitskurve | fest, gamma 1,5 | passte sich je Szene an (ESP schaltete sie ab, die TV-App allein nicht) | fest, gamma 1,5 |
+| Balken oben/unten (Letterbox) | an | aus | an |
+| neue Balken gelten nach | 50 gleichen Bildern (borderFrameCnt) | 8 Bildern | 48 Bildern (~2 s) |
+| einzelne Ausreißer (heller Schnitt, Untertitel) | bis 10 Bilder ignoriert | Zähler fing neu an | bis 10 Bilder ignoriert |
+| schwarzes Bild (Abblende) | „unbekannt“, ändert nichts (erst nach 600 Bildern) | galt als „keine Balken“, danach oben/unten kurz dunkel | „unbekannt“, ändert nichts (erst nach 600 Bildern) |
+| weicher Rand am Balken | +1 px (blurRemoveCnt) | – | +2 px (Bild ist 960×540) |
+| Aufnahmetakt | gleichmäßig | ab 0,4 s Standbild nur noch ⅓ | erst ab 5 s Standbild (Pause/Menü) gedrosselt |
+| Mittelwert je Zone | in linearem Licht | im Code-Bereich (YUV) | unverändert; Zonen sind seit 253 LEDs klein, linear wäre auf dem TV ~8× langsamer (gemessen) |
+| Glätten | einmal, am Ausgang | ESP32 (TV liefert roh) | unverändert |
+
+Quellen: `BlackBorderProcessor.cpp`, `BlackBorderDetector.cpp`, `ImageColorAveraging.cpp`, `InfiniteProcessing.cpp` und
+`schema-blackborderdetector.json` aus HyperHDR (MIT). HyperTizen (Samsung, Tizen) nutzt nur die Ersatzquelle mit 16
+Messpunkten und überlässt alles Weitere Hyperion/HyperHDR.
+
 ## Die Maße
 
 | Maß | Bedeutung | Ziel |

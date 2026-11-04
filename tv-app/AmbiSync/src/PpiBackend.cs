@@ -21,6 +21,8 @@ namespace TizenAmbilight
         static bool _ppiAuto;
         static int _drmStreak;
         static ZoneColors _ppiRaw;
+        static BorderTracker _trkY, _trkX;   // Balken-Übernahme (Video-Ebene), siehe BorderTracker
+        static int _trkFullH, _trkFullW;
         static DateTime _ppiInitTryUtc = DateTime.MinValue;
         static DateTime _lastPpiFrameUtc = DateTime.MinValue;
         static int[] _ppiLuma;      // scratch for PpiMedianCode (render loop only)

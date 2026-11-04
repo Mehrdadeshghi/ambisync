@@ -148,6 +148,38 @@ static class UiTests
         sw.Stop();
         Check("Analyse schnell genug", sw.Elapsed.TotalMilliseconds / 50 < 20, (sw.Elapsed.TotalMilliseconds / 50).ToString("0.00") + " ms/Bild (PC)");
 
+        // ---- Balken-Übernahme wie HyperHDR (BorderTracker) ----
+        {
+            const int BH = 540;
+            var tr = new TizenAmbilight.BorderTracker(BH);
+            int changes = 0;
+            for (int i = 0; i < 11; i++) if (tr.Update(false, 70, 470, BH)) changes++;
+            Check("erste stabile Letterbox gilt nach ~11 Bildern", tr.Known && tr.Start == 70 && tr.End == 470 && changes == 1, "start=" + tr.Start);
+            for (int i = 0; i < 8; i++) tr.Update(false, 0, BH, BH);           // heller Schnitt: 8 Ausreißer
+            for (int i = 0; i < 30; i++) tr.Update(false, 71, 469, BH);
+            Check("kurze Ausreisser aendern nichts", tr.Start == 70 && tr.End == 470);
+            for (int i = 0; i < 300; i++) tr.Update(true, 0, BH, BH);          // 12 s Abblende auf Schwarz
+            Check("schwarzes Bild behaelt die Balken", tr.Known && tr.Start == 70);
+            for (int i = 0; i < 40; i++) tr.Update(false, 0, BH, BH);
+            Check("Vollbild erst nach 50 stabilen Bildern (40: noch nicht)", tr.Start == 70);
+            for (int i = 0; i < 25; i++) tr.Update(false, 0, BH, BH);
+            Check("Vollbild nach ~2 s stabil", tr.Start == 0 && tr.End == BH);
+            for (int i = 0; i < 700; i++) tr.Update(true, 0, BH, BH);
+            Check("sehr lange schwarz -> unbekannt (volle Flaeche)", !tr.Known && tr.Start == 0 && tr.End == BH);
+        }
+        // ---- Balkenerkennung: schwarzes Bild = unbekannt, Rand wird weich abgeschnitten ----
+        {
+            int BW = 960, BH2 = 540;
+            var y = new byte[BW * BH2];
+            for (int i = 0; i < y.Length; i++) y[i] = 16;
+            int t, b; bool unk;
+            TizenAmbilight.VideoPlaneCapture.DetectActiveArea(y, BW, BH2, 18, out t, out b, out unk);
+            Check("schwarzes Bild -> unbekannt", unk && t == 0 && b == BH2);
+            for (int r = 70; r < 470; r++) for (int x = 0; x < BW; x++) y[r * BW + x] = (byte)(40 + (x % 50));
+            TizenAmbilight.VideoPlaneCapture.DetectActiveArea(y, BW, BH2, 18, out t, out b, out unk);
+            Check("Letterbox erkannt, +2 px Rand", !unk && t == 72 && b == 468, "t=" + t + " b=" + b);
+        }
+
         Console.WriteLine(fails == 0 ? "ALLE TESTS BESTANDEN" : fails + " TEST(S) FEHLGESCHLAGEN");
         Environment.Exit(fails == 0 ? 0 : 1);
     }

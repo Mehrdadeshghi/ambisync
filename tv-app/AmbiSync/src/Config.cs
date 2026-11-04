@@ -220,7 +220,7 @@ namespace TizenAmbilight
             // HIGHER gamma; taking the scene itself as the "surround" gives a content-adaptive curve,
             // the same idea as HDR10+ / SMPTE ST 2094 dynamic metadata and madVR's dynamic target nits.
             c.ZoneHexAll = PrefInt("zoneHexAll", 0) != 0;
-            c.AdaptiveGamma = PrefInt("adaptiveGamma", 1) != 0;
+            c.AdaptiveGamma = PrefInt("adaptiveGamma", 0) != 0;   // AmbiSync 1.5: feste Kurve wie Hyperion/HyperHDR (gamma 1.5)
             c.GammaMin = Math.Max(0.5, Math.Min(3.0, PrefDouble("gammaMin", 1.15)));
             c.GammaMax = Math.Max(c.GammaMin, Math.Min(4.0, PrefDouble("gammaMax", 1.6)));
             // ~2 s: slow enough that the strip never visibly pumps between scenes, which is the failure
@@ -253,7 +253,10 @@ namespace TizenAmbilight
             // positives (observed cropping 25% of the picture). `barRows=1` re-enables it for a
             // device whose plane does carry them.
             c.Bars = PrefInt("bars", 1) != 0;
-            c.BarRows = PrefInt("barRows", 0) != 0;
+            // AmbiSync 1.5: wieder AN. Die Fehlalarme kamen von der alten 90-%-Regel; die Zeilenprüfung verlangt
+            // inzwischen, dass JEDER Messpunkt schwarz ist, und BorderTracker übernimmt erst nach ~2 s stabil
+            // (wie HyperHDR). Ohne sie bleiben bei Filmen mit eingebrannten Balken oben/unten dunkel.
+            c.BarRows = PrefInt("barRows", 1) != 0;
             // 18, not 24. A genuine bar reads the PQ black level (16, measured); dark PICTURE reads
             // 21-26, so 24 cropped real picture whenever a scene went dark. The detector also
             // requires flatness, so this only has to clear the black level.

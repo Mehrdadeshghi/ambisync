@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.4.0 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.5.0 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -317,8 +317,6 @@ namespace TizenAmbilight
             // ---- letterbox / punch state, persisted across loop iterations ----
             int barTop = 0, barBottom = -1;
             int barLeft = 0, barRight = -1;   // pillarbox, same convention (-1 = full width)          // currently ADOPTED active area (-1 = full frame)
-            int candTop = -1, candBottom = -1, candCount = 0;
-            int candL = -1, candR = -1, candCountX = 0;      // pillarbox candidates
             int punchLeft = 0;
             int standbyEpisode = 0;     // iterations in the CURRENT standby episode
             DateTime lastFrameUtc = DateTime.UtcNow;
@@ -650,75 +648,40 @@ namespace TizenAmbilight
                             st.LastDims = dims;
                             L("zone layout: " + layout.Describe());
                         }
-                        // ---- letterbox detection, with hysteresis ----
+                        // ---- letterbox / pillarbox detection ----
+                        // AmbiSync 1.5: Übernahme-Regeln wie HyperHDR/Hyperion.ng (BorderTracker): neue Balken erst
+                        // nach ~2 s stabil, kurze Ausreißer ignoriert, schwarze Bilder (Abblende) ändern nichts.
                         if (cfg.Bars)
                         {
+                            int hold = Math.Max(1, cfg.BarHold) * 6;     // barHold 8 -> 48 Bilder ≈ HyperHDR borderFrameCnt 50
+                            if (_trkY == null || _trkFullH != vr.H) { _trkY = new BorderTracker(vr.H); _trkFullH = vr.H; }
+                            if (_trkX == null || _trkFullW != vr.W) { _trkX = new BorderTracker(vr.W); _trkFullW = vr.W; }
+                            _trkY.SwitchFrames = hold; _trkX.SwitchFrames = hold;
                             if (cfg.BarRows)
                             {
-                                // ---- VERTICAL (letterbox) ----
-                                int dTop, dBottom;
-                                VideoPlaneCapture.DetectActiveArea(vr.Y, vr.W, vr.H, cfg.BarThresh,
-                                                                   out dTop, out dBottom);
-                                if (Math.Abs(dTop - candTop) <= 2 && Math.Abs(dBottom - candBottom) <= 2)
+                                int dTop, dBottom; bool unkY;
+                                VideoPlaneCapture.DetectActiveArea(vr.Y, vr.W, vr.H, cfg.BarThresh, out dTop, out dBottom, out unkY);
+                                if (_trkY.Update(unkY, dTop, dBottom, vr.H))
                                 {
-                                    candCount++;
-                                }
-                                else
-                                {
-                                    candTop = dTop; candBottom = dBottom; candCount = 1;
-                                }
-                                // Only adopt once the same area has held for BarHold frames, or the bars
-                                // "breathe" on every cut to a bright or dark shot.
-                                // ASYMMETRIC hysteresis: cropping is adopted quickly (a film starting is a
-                                // real, persistent event) but GIVING THE CROP BACK needs a much longer run,
-                                // or a bright cut inside a letterboxed film reads as "bars gone" and the
-                                // strip twitches. Measured on hardware as adopted=7 flip-flops.
-                                bool reducingBars = (candTop < barTop) || (candBottom > barBottom);
-                                int needHold = reducingBars ? cfg.BarHold * 6 : cfg.BarHold;
-                                if (candCount >= needHold &&
-                                    (candTop != barTop || candBottom != barBottom))
-                                {
-                                    barTop = candTop; barBottom = candBottom;
-                                    st.BarTopNow = barTop; st.BarBottomNow = barBottom;
                                     st.BarsAdopted++;
-                                    L("letterbox: active rows " + barTop + ".." + barBottom +
-                                      " (" + (barBottom - barTop) + " of " + vr.H + " px)" +
-                                      (barTop > 0 || barBottom < vr.H ? " - bars" : " - full frame"));
+                                    L("letterbox: active rows " + _trkY.Start + ".." + _trkY.End + " (" + (_trkY.End - _trkY.Start) + " of " + vr.H + " px)" +
+                                      (!_trkY.Known ? " - unknown (black), full frame" : (_trkY.Start > 0 || _trkY.End < vr.H ? " - bars" : " - full frame")));
                                 }
+                                barTop = _trkY.Start; barBottom = _trkY.End;
                             }
-                            else
-                            {
-                                barTop = 0; barBottom = -1;
-                                st.BarTopNow = 0; st.BarBottomNow = 0;
-                            }
+                            else { barTop = 0; barBottom = -1; }
+                            st.BarTopNow = barTop; st.BarBottomNow = barBottom < 0 ? 0 : barBottom;
 
-                            // ---- HORIZONTAL (pillarbox) ----
-                            // This did not exist. Only ROWS were scanned, so a pillarboxed frame was
-                            // invisible to the detector: the left/right bands sampled pure black and
-                            // the top/bottom bands averaged across ~20% dead pixels. Measured on a real
-                            // 4:3-in-16:9 frame: 94 black columns each side.
-                            int dL, dR;
-                            VideoPlaneCapture.DetectActiveAreaX(vr.Y, vr.W, vr.H, cfg.BarThresh,
-                                                                out dL, out dR);
-                            if (Math.Abs(dL - candL) <= 2 && Math.Abs(dR - candR) <= 2)
+                            int dL, dR; bool unkX;
+                            VideoPlaneCapture.DetectActiveAreaX(vr.Y, vr.W, vr.H, cfg.BarThresh, out dL, out dR, out unkX);
+                            if (_trkX.Update(unkX, dL, dR, vr.W))
                             {
-                                candCountX++;
-                            }
-                            else
-                            {
-                                candL = dL; candR = dR; candCountX = 1;
-                            }
-                            bool reducingX = (candL < barLeft) || (candR > barRight);
-                            int needHoldX = reducingX ? cfg.BarHold * 6 : cfg.BarHold;
-                            if (candCountX >= needHoldX && (candL != barLeft || candR != barRight))
-                            {
-                                barLeft = candL; barRight = candR;
-                                st.BarLeftNow = barLeft; st.BarRightNow = barRight;
                                 st.BarsAdopted++;
-                                L("pillarbox: active cols " + barLeft + ".." + barRight +
-                                  " (" + (barRight - barLeft) + " of " + vr.W + " px)" +
-                                  (barLeft > 0 || barRight < vr.W ? " - bars" : " - full width"));
+                                L("pillarbox: active cols " + _trkX.Start + ".." + _trkX.End + " (" + (_trkX.End - _trkX.Start) + " of " + vr.W + " px)" +
+                                  (!_trkX.Known ? " - unknown (black), full width" : (_trkX.Start > 0 || _trkX.End < vr.W ? " - bars" : " - full width")));
                             }
+                            barLeft = _trkX.Start; barRight = _trkX.End;
+                            st.BarLeftNow = barLeft; st.BarRightNow = barRight;
                         }
                         else
                         {
@@ -1005,7 +968,9 @@ namespace TizenAmbilight
                         // sleep is capped so a scene change is still noticed within ~200 ms.
                         // (nicht bei der Ersatzquelle: dort ändern sich pro Bild nur wenige Messpunkte, ruhige
                         //  Szenen galten als "steht still" und die Bildrate sprang zwischen 25 und 8 hin und her)
-                        if (st.ContentUnchanged > 10 && !(st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal)) targetMs *= 3;
+                        // AmbiSync 1.5: erst nach 5 s Standbild (Pause, Menü). Vorher ab 0,4 s - dann kam der erste
+                        // Schnitt nach einer ruhigen Einstellung bis zu 120 ms später. Hyperion/HyperHDR drosseln gar nicht.
+                        if (st.ContentUnchanged > 5 * Math.Max(1, cfg.TargetFps) && !(st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal)) targetMs *= 3;
                         int elapsedMs = (int)(DateTime.UtcNow - lastFrameUtc).TotalMilliseconds;
                         int wait = targetMs - elapsedMs;
                         if (wait > 200) wait = 200;
