@@ -99,7 +99,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.3.0"
+#define FW_VERSION "1.4.0"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -140,7 +140,7 @@ struct Settings {
   int maxCurrent = 10000;     // mA, 0 = keine Begrenzung
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
   int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
-  int dither = 1;             // 1 = zeitliches Dithering (feinere dunkle Übergänge)
+  int dither = 0;             // 1 = zeitliches Dithering (feinere Stufen, kann flimmern); 0 = Flacker-Filter
   int wbR = 100, wbG = 100, wbB = 88;
   int mode = 0;               // Bildmodus: 0 Film, 1 Sport, 2 Spiel, 3 Ruhig, 4 Eigene (Regler + eigene Werte)   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
   int idleMode = 0;           // 0 aus, 1 feste Farbe
@@ -178,7 +178,7 @@ void loadSettings() {
   { int v = prefs.getInt("maxmA", 10000); cfg.maxCurrent = v < 0 ? 0 : v; }
   cfg.mAPerChannel = constrain(prefs.getInt("mAch", 20), 1, 60);
   cfg.smoothing = constrain(prefs.getInt("smooth", 40), 0, 95);
-  cfg.dither = prefs.getInt("dither", 1) ? 1 : 0;
+  cfg.dither = prefs.getInt("dith2", 0) ? 1 : 0;   // neuer Schlüssel: ab 1.4 standardmäßig aus (Flacker-Filter statt Dithering)
   cfg.wbR = constrain(prefs.getInt("wbR", 100), 0, 100);
   cfg.wbG = constrain(prefs.getInt("wbG", 100), 0, 100);
   cfg.wbB = constrain(prefs.getInt("wbB", 88), 0, 100);
@@ -207,7 +207,7 @@ void saveSettings() {
   prefs.putInt("maxmA", cfg.maxCurrent);
   prefs.putInt("mAch", cfg.mAPerChannel);
   prefs.putInt("smooth", cfg.smoothing);
-  prefs.putInt("dither", cfg.dither);
+  prefs.putInt("dith2", cfg.dither);
   prefs.putInt("mode", cfg.mode);
   prefs.putInt("wbR", cfg.wbR); prefs.putInt("wbG", cfg.wbG); prefs.putInt("wbB", cfg.wbB);
   prefs.putInt("idle", cfg.idleMode);
@@ -255,17 +255,18 @@ int defaultPin() {
 // ------------------------------------------------------------------ Bildpuffer
 // target: was zuletzt empfangen wurde. out: was gerade auf dem Streifen ist (weich nachgeführt).
 static uint8_t target[MAX_LEDS * 3];
-static float outBuf[MAX_LEDS * 3];
 static portMUX_TYPE frameMux = portMUX_INITIALIZER_UNLOCKED;
-// Überblenden: jedes neue Bild vom Fernseher wird von "glideFrom" (was gerade zu sehen war) nach
-// "glideTo" übergeblendet, und zwar über die gemessene Zeit bis zum nächsten Bild. So läuft es bei
-// 25 Bildern/s genauso weich wie bei der langsamen Ersatz-Bildquelle (nur ~2 Bilder/s).
-static float glideFrom[MAX_LEDS * 3];
-static uint8_t glideTo[MAX_LEDS * 3];
-static float ditherAcc[MAX_LEDS * 3];       // Rest für das zeitliche Dithering (feinere dunkle Töne)
+// Nachführen wie bei HyperHDR (Standard "HybridRgbInterpolator"): jede LED-Farbe hängt an einer kritisch
+// gedämpften Feder, die zur zuletzt empfangenen Farbe zieht. Kommt ein neues Bild, ändert sich nur das Ziel -
+// Position und Geschwindigkeit bleiben. Dadurch gibt es kein Neustarten pro Bild, keine Stufen und kein
+// "Verrücktwerden", wenn zwei Szenen kurz nacheinander kommen. Gerechnet wird exakt (nicht schrittweise
+// angenähert), also stabil bei jeder Bildrate.
+static float springPos[MAX_LEDS * 3];
+static float springVel[MAX_LEDS * 3];
+static float lastOutF[MAX_LEDS * 3];         // Flacker-Filter: zuletzt ausgegebener Wert je Kanal
+static float ditherAcc[MAX_LEDS * 3];        // Rest für das (optionale) zeitliche Dithering
 static volatile float frameIntervalMs = 40;  // gemessener Abstand der TV-Bilder (gleitender Mittelwert)
-static volatile float glideMsNow = 40;       // aktuelle Überblendzeit (für die Statusseite)
-static std::atomic<uint32_t> sceneCuts{0};
+static volatile float glideMsNow = 120;      // Reaktionszeit (50 %) für die Statusseite
 
 static volatile uint32_t lastRealtimeMs = 0;     // 0 = noch nie
 static volatile uint32_t realtimeTimeoutMs = 0;  // 0 = nie ablaufen
@@ -273,13 +274,16 @@ static std::atomic<uint32_t> rtPackets{0}, rtRejected{0}, rtFrames{0};
 static volatile uint32_t rtSourceIp = 0;          // IPv4 als Zahl (thread-sicher)
 static const char *volatile rtProtocol = "-";
 
-// ---- Bildmodi: je eine abgestimmte Kombination aus Überblenden (ESP32) und Reaktion/Sättigung (TV-App) ----
+// ---- Bildmodi ----
+// Wie bei Hyperion/HyperHDR gibt es genau EINE zeitliche Glättung, und zwar am Ausgang (hier, mit fester
+// Rate). Die TV-App schickt die Farben ungeglättet (alpha=1) und ohne szenenabhängige Helligkeitskurve (ag=0);
+// zwei hintereinander geschaltete Glättungen machten das Licht träge und bei schnellen Schnitten unruhig.
 struct ModePreset { const char *name; int smooth; float alpha, afast, sat; };
 static const ModePreset MODES[4] = {
-  {"Film",  40, 0.50f, 0.85f, 1.10f},   // weich, aber ohne spürbare Verzögerung (Standard)
-  {"Sport", 20, 0.70f, 0.95f, 1.15f},   // schnell, kräftige Farben
-  {"Spiel",  5, 0.90f, 1.00f, 1.00f},   // so direkt wie möglich
-  {"Ruhig", 80, 0.20f, 0.50f, 1.00f},   // gemütliches Hintergrundlicht, langsame Wechsel
+  {"Film",  40, 1.00f, 1.00f, 1.10f},   // weich, aber ohne spürbare Verzögerung (Standard)
+  {"Sport", 20, 1.00f, 1.00f, 1.15f},   // schnell, kräftige Farben
+  {"Spiel",  5, 1.00f, 1.00f, 1.00f},   // so direkt wie möglich
+  {"Ruhig", 95, 1.00f, 1.00f, 1.00f},   // gemütliches Hintergrundlicht, langsame Wechsel
 };
 int effSmoothing() { return cfg.mode < 4 ? MODES[cfg.mode].smooth : cfg.smoothing; }
 
@@ -607,8 +611,7 @@ void renderTask(void *) {
   const uint32_t periodMs = 16;  // ~60 Bilder/s
   uint32_t fpsT0 = millis(), fpsN = 0, rtN0 = 0;
   float idleFade = 0;            // 0 = Echtzeit, 1 = Leerlauf (für weiches Ausblenden)
-  uint32_t lastFrameSeen = 0, lastFrameAt = 0, lastGapMs = 0;
-  float glideP = 1.0f, glideE = 1.0f, glideMs = 40.0f;
+  uint32_t lastFrameSeen = 0, lastFrameAt = 0, lastTick = millis();
   for (;;) {
     uint32_t t0 = millis();
     if (ledReinit) {
@@ -618,8 +621,7 @@ void renderTask(void *) {
       ledInit();
       memset(frame, 0, sizeof(frame));
       int keep = rmtLeds; rmtLeds = MAX_LEDS; ledShow(frame); rmtLeds = keep;   // auch LEDs hinter dem neuen Ende aus
-      for (int i = 0; i < MAX_LEDS * 3; i++) { outBuf[i] = 0; glideFrom[i] = 0; ditherAcc[i] = 0; }
-      memset(glideTo, 0, sizeof(glideTo));
+      for (int i = 0; i < MAX_LEDS * 3; i++) { springPos[i] = 0; springVel[i] = 0; ditherAcc[i] = 0; lastOutF[i] = 0; }
     }
     int n = rmtLeds;
 
@@ -654,40 +656,33 @@ void renderTask(void *) {
       uint8_t ir = (cfg.idleColor >> 16) & 0xFF, ig = (cfg.idleColor >> 8) & 0xFF, ib = cfg.idleColor & 0xFF;
       if (cfg.idleMode == 0) { ir = ig = ib = 0; }
       else { ir = ir * cfg.idleBrightness / 255; ig = ig * cfg.idleBrightness / 255; ib = ib * cfg.idleBrightness / 255; }
-      // ---- neues Bild vom Fernseher? Dann von dem aus überblenden, was gerade zu sehen ist ----
+      // ---- Bildabstand messen (nur Statistik + Gültigkeitsdauer der Pakete) ----
       uint32_t fr = rtFrames;
       if (fr != lastFrameSeen) {
         lastFrameSeen = fr;
         uint32_t gap = t0 - lastFrameAt;
         if (lastFrameAt != 0 && gap >= 8 && gap < 1500) frameIntervalMs += ((float)gap - frameIntervalMs) * 0.2f;
-        lastGapMs = (lastFrameAt != 0 && gap >= 8) ? gap : 0;
         lastFrameAt = t0;
-        for (int i = 0; i < n * 3; i++) glideFrom[i] = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;   // Stand jetzt
-        portENTER_CRITICAL(&frameMux);
-        memcpy(glideTo, target, n * 3);
-        portEXIT_CRITICAL(&frameMux);
-        // Szenenwechsel: große mittlere Änderung -> kurz statt über das ganze Intervall überblenden
-        uint32_t diff = 0;
-        for (int i = 0; i < n * 3; i++) diff += (uint32_t)fabsf(glideTo[i] - glideFrom[i]);
-        float meanDiff = n ? (float)diff / (n * 3) : 0;
-        // Abstand zum vorigen Bild direkt nehmen (nicht den trägen Mittelwert): springt die Bildrate des
-        // Fernsehers, würde sonst zu kurz überblendet und dann gehalten -> Stufen
-        float iv = constrain((lastGapMs > 0 && lastGapMs < 1500) ? (float)lastGapMs : frameIntervalMs, 16.0f, 1000.0f);
-        int sm = effSmoothing();
-        float g = iv * (sm / 40.0f);                         // Standard 40 % = genau ein Bildabstand
-        // Obergrenze, damit langsame Bildquellen (Samsung-Farbmessung, schwaches WLAN) keine spürbare
-        // Verzögerung bekommen: Standard 40 % -> höchstens 160 ms
-        g = min(g, 40.0f + sm * 3.0f);
-        if (meanDiff > 40.0f) { g = min(g, 60.0f); sceneCuts++; }
-        glideMs = g;
-        glideMsNow = g;
       }
-      glideP = glideMs <= 1.0f ? 1.0f : min(1.0f, (float)(t0 - lastFrameAt) / glideMs);
-      glideE = glideP;   // linear: gleichmäßige Bewegung, kein Halten an den Bildgrenzen
+      // ---- kritisch gedämpfte Feder zum aktuellen Ziel ----
+      // t50 = Zeit bis 50 % einer Sprungänderung; omega = 1,678 / t50 (Lösung von 1-(1+wt)e^-wt = 0,5)
+      float t50 = 20.0f + effSmoothing() * 2.5f;            // Film (40) -> 120 ms, Sport (20) -> 70, Spiel (5) -> 32, Ruhig (95) -> 257
+      glideMsNow = t50;
+      float w = 1.678f / (t50 / 1000.0f);
+      float dt = constrain((float)(t0 - lastTick), 1.0f, 100.0f) / 1000.0f;
+      float ex = expf(-w * dt);
+      portENTER_CRITICAL(&frameMux);
+      memcpy(want, target, n * 3);
+      portEXIT_CRITICAL(&frameMux);
       for (int i = 0; i < n * 3; i++) {
-        float v = glideFrom[i] + (glideTo[i] - glideFrom[i]) * glideE;
-        want[i] = (uint8_t)(v + 0.5f);
-        wantF[i] = v;
+        float T = want[i], e = springPos[i] - T, v = springVel[i];
+        float c = v + w * e;
+        springPos[i] = T + (e + c * dt) * ex;
+        springVel[i] = (v - w * c * dt) * ex;
+        float o = springPos[i];
+        if (o < 0) o = 0; else if (o > 255) o = 255;
+        wantF[i] = o;
+        want[i] = (uint8_t)(o + 0.5f);
       }
       for (int i = 0; i < n; i++) {
         wantF[i * 3] = wantF[i * 3] * (1 - idleFade) + ir * idleFade;
@@ -699,17 +694,16 @@ void renderTask(void *) {
         portENTER_CRITICAL(&frameMux);
         memset(target, 0, sizeof(target));
         portEXIT_CRITICAL(&frameMux);
-        memset(glideTo, 0, sizeof(glideTo));
-        for (int i = 0; i < MAX_LEDS * 3; i++) glideFrom[i] = 0;
-        glideP = 1.0f; glideE = 1.0f;
+        for (int i = 0; i < MAX_LEDS * 3; i++) { springPos[i] = 0; springVel[i] = 0; }
       }
     }
 
+    lastTick = t0;
+    if (tm != TEST_NONE) for (int i = 0; i < n * 3; i++) { springPos[i] = wantF[i]; springVel[i] = 0; }
     memcpy(viewWant, want, n * 3);
 
-    // ---- Ausgabe: Überblenden passiert oben, hier nur noch ein Hauch Glättung gegen Paket-Zittern ----
-    float k = (tm != TEST_NONE) ? 1.0f : 0.85f;
-    for (int i = 0; i < n * 3; i++) outBuf[i] += (wantF[i] - outBuf[i]) * k;
+    // ---- Ausgabe: genau eine Glättung (die Feder oben), hier keine zweite ----
+    float *outBuf = wantF;
 
     // ---- Helligkeit + Strombegrenzung (in Kommazahlen, damit dunkle Töne nicht stufig werden) ----
     float bscale = cfg.brightness / 255.0f;
@@ -724,8 +718,10 @@ void renderTask(void *) {
       bscale *= s;
       limiting = true;
     }
-    // zeitliches Dithering: der Nachkommarest wird ins nächste Bild mitgenommen. Bei 60 Bildern/s
-    // ergibt das Zwischenstufen, die ein 8-Bit-Streifen allein nicht kann (weiche dunkle Übergänge).
+    // Flacker-Filter (wie HyperHDR "antiFlickeringFilter"): ein Kanal ändert seinen 8-Bit-Wert erst, wenn der
+    // genaue Wert um mehr als eine halbe Stufe vom zuletzt ausgegebenen abweicht. Sonst springt eine dunkle LED
+    // zwischen z. B. 2 und 3 hin und her - das sieht man als Flackern. Zeitliches Dithering (feinere Stufen,
+    // kann bei WS2812B aber flimmern) gibt es weiterhin als Option.
     bool dith = cfg.dither && !analogOn && tm == TEST_NONE;
     float wb[3] = {cfg.wbR / 100.0f, cfg.wbG / 100.0f, cfg.wbB / 100.0f};
     for (int i = 0; i < n * 3; i++) {
@@ -736,8 +732,12 @@ void renderTask(void *) {
         float a = v + ditherAcc[i];
         o = (int)a; if (o > 255) o = 255;
         ditherAcc[i] = a - o;
-      } else { o = (int)(v + 0.5f); ditherAcc[i] = 0; }
-      frame[i] = (uint8_t)o;
+      } else {
+        if (tm != TEST_NONE || fabsf(v - lastOutF[i]) > 0.49f) lastOutF[i] = v;
+        o = (int)(lastOutF[i] + 0.5f);
+        ditherAcc[i] = 0;
+      }
+      frame[i] = (uint8_t)(o > 255 ? 255 : o);
     }
 
     ledShow(frame);
@@ -861,8 +861,7 @@ void handleStatus() {
        ",\"source\":\"" + (lastRealtimeMs ? IPAddress(rtSourceIp).toString() : String("")) + "\"" +
        ",\"ageMs\":" + String(rtAge) +
        ",\"intervalMs\":" + String(frameIntervalMs, 0) +
-       ",\"glideMs\":" + String(glideMsNow, 0) +
-       ",\"cuts\":" + String((uint32_t)sceneCuts) + "},";
+       ",\"glideMs\":" + String(glideMsNow, 0) + "},";
   j += "\"current\":" + String(estCurrent) + ",";
   j += "\"limiting\":" + String(limiting ? "true" : "false") + ",";
   j += "\"test\":" + String(testMode) + ",";
@@ -1017,8 +1016,6 @@ void handleTvControl() {
   if (cfg.stripType == 0 && tokenInt(cfg.tvTokens, "leds", -1) < 0) body = body.length() ? body + ",leds=" + String(cfg.ledCount) : "leds=" + String(cfg.ledCount);
   // Die TV-App dimmt ab Werk nach 6 s ohne Bildänderung auf 35 % und springt bei jeder kleinen Änderung
   // zurück: ruhige Szenen "atmen". Erst nach 60 s Standbild (Pause, geschlossenes Video) abdunkeln.
-  // Reaktion der TV-App (alpha) folgt dem Regler "Weiche Übergänge": Standard 40 % -> alpha 0.5.
-  // Die App-Vorgabe 0.25 hinkte bei normalen Farbwechseln eine halbe Sekunde hinterher.
   String tk = String(",") + cfg.tvTokens + ",";
   auto add = [&](const char *k, float v) {
     if (tk.indexOf(String(",") + k + "=") >= 0) return;   // von Hand gesetzt: hat Vorrang
@@ -1026,9 +1023,9 @@ void handleTvControl() {
   };
   if (cfg.mode < 4) {
     const ModePreset &m = MODES[cfg.mode];
-    add("alpha", m.alpha); add("afast", m.afast); add("sat", m.sat);
+    add("alpha", m.alpha); add("afast", m.afast); add("sat", m.sat); add("ag", 0); add("punch", 0);
   } else {
-    add("alpha", constrain(0.9f - cfg.smoothing / 100.0f, 0.15f, 0.9f));
+    add("alpha", 1.0f); add("afast", 1.0f); add("ag", 0); add("punch", 0);   // geglättet wird nur im ESP32
   }
   // Ersatz-Bildquelle (Samsung-Farbmessung, bei DRM-Inhalten): ab Werk 24 Messpunkte nacheinander mit je
   // 40 ms Wartezeit -> jeder Punkt nur ~1x pro Sekunde neu, die LEDs springen dann im Sekundentakt.

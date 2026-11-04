@@ -177,6 +177,7 @@ namespace TizenAmbilight
                     Place(); _rebuild = true;
                     // AmbiSync: alte Messpunkte gehören zur alten Zonenzahl - verwerfen, bis neu gemessen ist
                     _mz = null; if (_have != null) Array.Clear(_have, 0, _have.Length);
+                    _ringVal = null; _ringHave = null;
                 }
                 _geomReady = true;
                 InitError = null;
@@ -327,7 +328,7 @@ namespace TizenAmbilight
                 {
                     _mz = new int[pz]; _mpx = new int[pz]; _mpy = new int[pz];
                     _val = new int[pz * 3]; _have = new bool[pz];
-                    _cur = 0;
+                    _cur = 0; _ringVal = null; _ringHave = null;
                 }
                 _pz = pz;
                 for (int k = 0; k < pz; k++)
@@ -378,6 +379,16 @@ namespace TizenAmbilight
             // AmbiSync: Zeit für einen kompletten Umlauf (jeder Messpunkt einmal neu) - fürs Statuspaket
             if (next < i0 || armed >= pz)
             {
+                // AmbiSync: ein Umlauf ist fertig -> als zusammenhängendes Bild freigeben. Vorher sah die App
+                // nach einem Schnitt eine Mischung aus alter und neuer Szene (je nachdem, welche Punkte schon
+                // neu gemessen waren), bei zwei Schnitten kurz hintereinander sogar aus drei Szenen.
+                lock (_lock)
+                {
+                    if (_ringVal == null || _ringVal.Length != _val.Length) { _ringVal = new int[_val.Length]; _ringHave = new bool[_have.Length]; }
+                    Array.Copy(_val, _ringVal, _val.Length);
+                    Array.Copy(_have, _ringHave, _have.Length);
+                    _ringPz = pz;
+                }
                 long now = System.Diagnostics.Stopwatch.GetTimestamp();
                 if (_ringT0 != 0) RingMs = (now - _ringT0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 _ringT0 = now;
@@ -385,6 +396,7 @@ namespace TizenAmbilight
             _cur = next;
         }
         static long _ringT0;
+        static int[] _ringVal; static bool[] _ringHave; static int _ringPz;   // letzter vollständiger Umlauf
         public static volatile float RingMsF;
         public static double RingMs { get { return RingMsF; } set { RingMsF = (float)value; } }
 
@@ -399,12 +411,15 @@ namespace TizenAmbilight
             {
                 if (_mz == null) return 0;
                 int pz = _pz;
+                // vollständigen Umlauf nehmen, solange er zur aktuellen Messpunkt-Liste passt; sonst (Anlauf) die laufenden Werte
+                bool ring = _ringVal != null && _ringPz == pz && _ringVal.Length == pz * 3;
+                int[] val = ring ? _ringVal : _val; bool[] have = ring ? _ringHave : _have;
                 if (_snapZ == null || _snapZ.Length < pz) { _snapZ = new int[pz]; _snapV = new int[pz * 3]; }
                 for (int k = 0; k < pz; k++)
                 {
-                    if (!_have[k]) continue;
+                    if (!have[k]) continue;
                     _snapZ[n] = _mz[k];
-                    _snapV[n * 3] = _val[k * 3]; _snapV[n * 3 + 1] = _val[k * 3 + 1]; _snapV[n * 3 + 2] = _val[k * 3 + 2];
+                    _snapV[n * 3] = val[k * 3]; _snapV[n * 3 + 1] = val[k * 3 + 1]; _snapV[n * 3 + 2] = val[k * 3 + 2];
                     n++;
                 }
                 zc = Math.Min(_zones, r8.Length);
