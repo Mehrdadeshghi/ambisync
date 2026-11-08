@@ -60,7 +60,7 @@ static String jget(const char *js, const char *key, const char *from);
 HWCDC usbLog;
 #endif
 
-static const int LOG_LINES = 60, LOG_W = 200;
+static const int LOG_LINES = 40, LOG_W = 160;   // klein halten: jeder Puffer kostet Arbeitsspeicher
 static char logRing[LOG_LINES][LOG_W];
 static int logHead = 0;
 static uint32_t logSeq = 0;
@@ -115,7 +115,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.5.2"
+#define FW_VERSION "1.5.3"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -370,8 +370,9 @@ bool ledInit() {
     LOG("     Der ganze Streifen zeigt die Durchschnittsfarbe des Bildes (%d Zonen)", rmtLeds);
     return true;
   }
-  rmtBuf = (rmt_data_t *)malloc(sizeof(rmt_data_t) * MAX_LEDS * 24);   // ~47 KB, reicht für jede Länge
-  if (!rmtBuf) { LOG("LED: FEHLER – kein Speicher für %d LEDs", MAX_LEDS); rmtPin = -1; return false; }
+  // nur so groß wie nötig (24 Takte je LED, 4 Byte je Takt): 260 LEDs = 25 KB statt immer 47 KB
+  rmtBuf = (rmt_data_t *)malloc(sizeof(rmt_data_t) * max(1, rmtLeds) * 24);
+  if (!rmtBuf) { LOG("LED: FEHLER – kein Speicher für %d LEDs", rmtLeds); rmtPin = -1; return false; }
   // 10 MHz = 100 ns pro Takt
   if (!rmtInit(cfg.ledPin, RMT_TX_MODE, AMB_RMT_MEM, 10000000)) {
     LOG("LED: FEHLER – Ausgang auf GPIO %d lässt sich nicht starten", cfg.ledPin);
@@ -1639,6 +1640,13 @@ void setup() {
   LOG("Einstellungen: WLAN \"%s\", Name %s.local, Admin-Passwort %s, Streifen %s, Filter-IP %s",
       cfg.ssid.length() ? cfg.ssid.c_str() : "(keins)", cfg.hostname.c_str(), cfg.adminPass.length() ? "gesetzt" : "NICHT gesetzt",
       cfg.stripType == 1 ? (String("RGB R") + cfg.pinR + "/G" + cfg.pinG + "/B" + cfg.pinB).c_str() : (String(cfg.ledCount) + " WS2812B an GPIO " + cfg.ledPin).c_str(), cfg.allowIp.length() ? cfg.allowIp.c_str() : "(alle)");
+  // Bluetooth-Speicher: ohne Bluetooth-Test sofort freigeben (~30 KB mehr Arbeitsspeicher für WLAN und
+  // Weboberfläche). Mit Bluetooth nur den Teil für klassisches Bluetooth (das braucht AmbiSync nicht).
+#if AMBI_BLE
+  if (!cfg.ble) btMemRelease(BT_MODE_BTDM);
+  else btMemRelease(BT_MODE_CLASSIC_BT);
+#endif
+  LOG("Arbeitsspeicher frei: %u KB", (unsigned)(ESP.getFreeHeap() / 1024));
   WiFi.onEvent(onWifiEvent);
   memset(target, 0, sizeof(target));
 
