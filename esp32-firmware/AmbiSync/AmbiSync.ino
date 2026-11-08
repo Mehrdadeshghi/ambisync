@@ -115,7 +115,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.5.0"
+#define FW_VERSION "1.5.1"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -875,6 +875,7 @@ void handleStatus() {
   j += "\"ip\":\"" + (apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString()) + "\",";
   j += "\"host\":\"" + jsonEsc(cfg.hostname) + "\",";
   j += "\"rssi\":" + String(apMode ? 0 : WiFi.RSSI()) + ",";
+  j += "\"txp\":" + String((int)WiFi.getTxPower() / 4.0f, 1) + ",";
   j += "\"uptime\":" + String(now / 1000) + ",";
   j += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
   j += "\"leds\":" + String(cfg.ledCount) + ",";
@@ -1338,6 +1339,7 @@ bool tryWifi(const String &ssid, const String &pass) {
   // und Repeatern: sonst bleibt der ESP32 am ersten gefundenen, oft weit entfernten hängen)
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);   // volle Sendeleistung schon beim Verbinden (Hardware-Maximum)
   WiFi.begin(ssid.c_str(), pass.c_str());
   LOG("WLAN: verbinde mit \"%s\" (max. 20 s) ...", ssid.c_str());
   uint32_t t0 = millis();
@@ -1353,8 +1355,8 @@ bool tryWifi(const String &ssid, const String &pass) {
     return false;
   }
   WiFi.setAutoReconnect(true);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);   // volle Sendeleistung
-  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d, Zugangspunkt %s", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel(), WiFi.BSSIDstr().c_str());
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);   // nach dem Verbinden noch einmal (manche Treiberstände setzen sie zurück)
+  LOG("WLAN: verbunden – IP %s, Signal %d dBm, Kanal %d, Zugangspunkt %s, Sendeleistung %.1f dBm", WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(), (int)WiFi.channel(), WiFi.BSSIDstr().c_str(), (int)WiFi.getTxPower() / 4.0f);
   if (WiFi.RSSI() < -70) LOG("WLAN: Signal schwach. Tipp: ESP32 nicht hinter das Metall des Fernsehers und nicht direkt an den LED-Streifen legen, Antenne (Ende mit der Zickzack-Leiterbahn) frei lassen.");
   LOG("Weboberfläche: http://%s  oder  http://%s.local", WiFi.localIP().toString().c_str(), cfg.hostname.c_str());
   return true;
@@ -1714,10 +1716,12 @@ void loop() {
       LOG("WLAN: seit %u s weg – verbinde selbst neu mit \"%s\" ...", (unsigned)((now - lostSince) / 1000), cfg.ssid.c_str());
       WiFi.disconnect(false);
       delay(50);
+      WiFi.setTxPower(WIFI_POWER_19_5dBm);
       WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
     }
     if (now - lostSince > 120000) { LOG("WLAN seit 2 min weg – Neustart"); delay(200); ESP.restart(); }
   } else if (lostSince) {
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     LOG("WLAN: wieder da nach %u s – IP %s, Signal %d dBm", (unsigned)((millis() - lostSince) / 1000), WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
     lostSince = 0;
   }

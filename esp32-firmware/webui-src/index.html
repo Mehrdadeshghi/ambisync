@@ -271,7 +271,7 @@ async function refresh(){clearTimeout(refT);
   $('sRt').textContent=(Number(s.rt.fps)||0).toFixed(1)+(s.rt.active&&s.rt.glideMs!=null?' · Reaktion '+s.rt.glideMs+' ms':'');
   $('sOut').innerHTML=(s.ledOk?dot('ok'):dot('bad')+'Fehler · ')+(s.type==1?'RGB-Streifen (eine Farbe)':s.leds+' LEDs an GPIO '+s.pin)+' · '+s.outFps.toFixed(0)+' Bilder/s';
   $('sCur').innerHTML=(s.limiting?dot('warn'):'')+(s.current/1000).toFixed(2)+' A'+(s.limiting?' (begrenzt)':'');
-  $('sWifi').textContent=s.ap?'Einrichtungs-WLAN':s.rssi+' dBm';
+  $('sWifi').textContent=s.ap?'Einrichtungs-WLAN':s.rssi+' dBm'+(s.txp?' · sendet mit '+s.txp+' dBm':'');
   $('sUp').textContent=fmtUp(s.uptime);
   TVP=!!s.tvPaused;$('tvPauseBtn').textContent=TVP?'Weiter (Aufnahme fortsetzen)':'Update vorbereiten';$('tvPauseBtn').className=TVP?'':'sec';
   const t=s.tv;
