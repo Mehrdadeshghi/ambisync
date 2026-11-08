@@ -48,7 +48,7 @@ namespace TizenAmbilight
         static readonly object _beaconLock = new object();
         static Thread _beaconThread;
 
-        static void AutoDiscover(Config cfg, bool ledCountFixed, bool zoneCountFixed)
+        static void AutoDiscover(Config cfg, bool ledCountFixed, bool zoneCountFixed, bool background = false)
         {
             _ledCountFixed = ledCountFixed;
             _zoneCountFixed = zoneCountFixed;
@@ -66,7 +66,8 @@ namespace TizenAmbilight
                 {
                     cfg.WledIp = ip;
                     if (port > 0 && port <= 65535) cfg.WledPort = port;
-                    if (leds >= 4 && leds <= WledOutput.MaxDrgbLeds)
+                    // im Hintergrund läuft die Hauptschleife schon: LED-Anzahl dann nur über den Steuerkanal (leds=)
+                    if (!background && leds >= 4 && leds <= WledOutput.MaxDrgbLeds)
                     {
                         if (!ledCountFixed) cfg.LedCount = leds;
                         if (!zoneCountFixed && !ledCountFixed) cfg.ZoneCount = leds;
@@ -283,6 +284,61 @@ namespace TizenAmbilight
                 ip = _beaconIp; leds = _beaconLeds; port = _beaconPort;
                 return ip != null && (DateTime.UtcNow - _beaconUtc).TotalMilliseconds <= maxAgeMs;
             }
+        }
+
+        // ---------------------------------------------------------------- gemerkte Steuerung (Bluetooth)
+
+        static string _ctrlCacheWritten;
+
+        static string ControlCachePath()
+        {
+            string p = CachePath();
+            return p == null ? null : Path.Combine(Path.GetDirectoryName(p), "control.cache");
+        }
+
+        /// <summary>true, wenn der Steuertext das Token k=v enthält (z. B. "ble=1").</summary>
+        internal static bool HasToken(string body, string k, string v)
+        {
+            foreach (string t in body.Split(new[] { ',', '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                if (string.Equals(t.Trim(), k + "=" + v, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>Letzten Steuertext vom ESP32 merken (ohne "pause"), damit die App beim nächsten Start auch
+        /// ohne WLAN-Verbindung zum ESP32 weiß, dass sie Bluetooth nehmen soll und mit wie vielen LEDs.</summary>
+        static void WriteControlCache(string body)
+        {
+            try
+            {
+                var keep = new List<string>();
+                foreach (string t in body.Split(new[] { ',', '\n', '\r', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string x = t.Trim();
+                    if (x.Length == 0 || string.Equals(x, "pause", StringComparison.OrdinalIgnoreCase) || string.Equals(x, "run", StringComparison.OrdinalIgnoreCase)) continue;
+                    keep.Add(x);
+                }
+                string s = string.Join(",", keep.ToArray());
+                if (s == _ctrlCacheWritten) return;
+                string p = ControlCachePath();
+                if (p == null) return;
+                Directory.CreateDirectory(Path.GetDirectoryName(p));
+                File.WriteAllText(p, s);
+                _ctrlCacheWritten = s;
+            }
+            catch { }
+        }
+
+        static string ReadControlCache()
+        {
+            try
+            {
+                string p = ControlCachePath();
+                if (p == null || !File.Exists(p)) return null;
+                string s = File.ReadAllText(p).Trim();
+                _ctrlCacheWritten = s;
+                return s.Length > 0 && s.Length < 4000 ? s : null;
+            }
+            catch { return null; }
         }
 
         // ---------------------------------------------------------------- gemerkte Adresse

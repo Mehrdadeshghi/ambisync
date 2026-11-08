@@ -115,7 +115,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.5.1"
+#define FW_VERSION "1.5.2"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -1326,8 +1326,10 @@ void startAp() {
   LOG("2. http://%s öffnen, Heim-WLAN aus der Liste wählen, Passwort eingeben", WiFi.softAPIP().toString().c_str());
   LOG("   oder hier im Monitor:  wifi \"WLAN-Name\" Passwort   (Befehl 'hilfe' zeigt alle Befehle)");
   if (cfg.ssid.length()) LOG("Heim-WLAN \"%s\" ist gespeichert und wird im Hintergrund weiter versucht", cfg.ssid.c_str());
-  testMode = TEST_FIRST;   // erste LED rot = "bitte einrichten"
-  testUntilMs = 0;
+  // erste LED rot = "bitte einrichten". Nicht bei Bluetooth mit gespeichertem WLAN: dann sollen die Farben
+  // vom Fernseher per Bluetooth weiterlaufen, auch wenn der Router gerade nicht erreichbar ist.
+  if (!(cfg.ble && cfg.ssid.length())) { testMode = TEST_FIRST; testUntilMs = 0; }
+  else LOG("Bluetooth ist an: Farben vom Fernseher laufen ohne WLAN weiter");
 }
 
 bool tryWifi(const String &ssid, const String &pass) {
@@ -1404,6 +1406,10 @@ void onWifiEvent(arduino_event_id_t ev, arduino_event_info_t info) {
 
 void printStatus() {
   uint32_t now = millis();
+  if (cfg.ble)
+    LOG("BLUETOOTH | %s | Fernseher %s | %u Pakete (%u KB), %u Verbindungen | Adresse %s",
+        bleRunning ? "an" : "FEHLER beim Start", bleConnected ? "VERBUNDEN" : "nicht verbunden",
+        (unsigned)bleWrites, (unsigned)(bleBytes / 1024), (unsigned)bleConnects, bleMacStr);
   uint32_t lrt = lastRealtimeMs;
   bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   uint32_t tvMs = tvStatusMs;
@@ -1700,7 +1706,7 @@ void loop() {
     dns.processNextRequest();
     if (cfg.ssid.length()) {
       if (WiFi.status() == WL_CONNECTED) { LOG("Heim-WLAN wieder da – Neustart in den Normalbetrieb"); delay(200); ESP.restart(); }
-      if (millis() - apSinceMs > 10UL * 60 * 1000) { LOG("10 min im Einrichtungsmodus – Neustart, Heim-WLAN neu versuchen"); delay(200); ESP.restart(); }
+      if (millis() - apSinceMs > 10UL * 60 * 1000 && !bleConnected) { LOG("10 min im Einrichtungsmodus – Neustart, Heim-WLAN neu versuchen"); delay(200); ESP.restart(); }
     }
   }
   server.handleClient();
@@ -1719,7 +1725,8 @@ void loop() {
       WiFi.setTxPower(WIFI_POWER_19_5dBm);
       WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
     }
-    if (now - lostSince > 120000) { LOG("WLAN seit 2 min weg – Neustart"); delay(200); ESP.restart(); }
+    // nicht neu starten, solange der Fernseher per Bluetooth verbunden ist (das würde die Farben unterbrechen)
+    if (now - lostSince > 120000 && !bleConnected) { LOG("WLAN seit 2 min weg – Neustart"); delay(200); ESP.restart(); }
   } else if (lostSince) {
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     LOG("WLAN: wieder da nach %u s – IP %s, Signal %d dBm", (unsigned)((millis() - lostSince) / 1000), WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());

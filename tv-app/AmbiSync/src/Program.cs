@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.6.0 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.6.1 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -167,7 +167,21 @@ namespace TizenAmbilight
             Config cfg = ReadConfig();
             _cfg = cfg;
             // AmbiSync: ESP32 im Netz finden (wledIp = "auto"); übernimmt IP, LED-Anzahl und Steuer-URL
-            AutoDiscover(cfg, PrefInt("ledCount", 0) > 0, PrefInt("zoneCount", 0) > 0);
+            // AmbiSync Bluetooth: stand beim letzten Mal "ble=1" im Steuerkanal, diese Einstellungen sofort
+            // übernehmen und per Bluetooth loslegen - auch wenn der ESP32 (noch) kein WLAN hat. Die Suche im WLAN
+            // läuft dann im Hintergrund weiter und übernimmt den Steuerkanal, sobald er auftaucht.
+            string cachedCtrl = ReadControlCache();
+            if (cachedCtrl != null && HasToken(cachedCtrl, "ble", "1"))
+            {
+                _ctrlBody = cachedCtrl;
+                L("bluetooth: gemerkte Einstellungen vom ESP32 übernommen, starte ohne auf das WLAN zu warten");
+                bool lf = PrefInt("ledCount", 0) > 0, zf = PrefInt("zoneCount", 0) > 0;
+                var dt = new Thread(() => { try { AutoDiscover(cfg, lf, zf, true); } catch (Exception e) { L("discovery: " + e.Message); } });
+                dt.IsBackground = true; dt.Name = "discovery";
+                dt.Start();
+            }
+            else
+                AutoDiscover(cfg, PrefInt("ledCount", 0) > 0, PrefInt("zoneCount", 0) > 0);
             cfg.MapOffset = ((cfg.MapOffset % cfg.ZoneCount) + cfg.ZoneCount) % cfg.ZoneCount;
             CaptureFileName = cfg.CompressType == CaptureApi.CompressJpeg ? "amb.jpg" : "amb.png";
 
@@ -407,6 +421,7 @@ namespace TizenAmbilight
                         {
                             _appliedCtrl = ctrl;
                             ApplyControl(ctrl, cfg, st);
+                            WriteControlCache(ctrl);
                         }
                         if (_capturePaused)
                         {

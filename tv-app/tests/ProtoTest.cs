@@ -16,7 +16,7 @@ static class ProtoTest
         Func<string, object> get = f => ct.GetField(f).GetValue(cfg);
         Check("Standard: wledIp = auto", (string)get("WledIp") == "auto", (string)get("WledIp"));
 
-        amb.GetMethod("AutoDiscover", SF).Invoke(null, new object[] { cfg, false, false });
+        amb.GetMethod("AutoDiscover", SF).Invoke(null, new object[] { cfg, false, false, false });
         Check("ESP32 per Broadcast gefunden", (string)get("WledIp") == "127.0.0.1" || ((string)get("WledIp")).StartsWith("1"), (string)get("WledIp"));
         Check("LED-Anzahl vom ESP32 übernommen", (int)get("LedCount") == 123 && (int)get("ZoneCount") == 123, get("LedCount") + "/" + get("ZoneCount"));
         Check("Steuer-URL gesetzt", ((string)get("ControlUrl")).EndsWith("/tv/control"), (string)get("ControlUrl"));
