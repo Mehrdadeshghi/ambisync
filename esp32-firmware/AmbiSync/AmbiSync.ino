@@ -1371,11 +1371,17 @@ void handleCrash() {
   if (esp_core_dump_get_summary(&s) != ESP_OK) { server.send(500, "text/plain", "Absturzbericht nicht lesbar"); return; }
   char b[96];
   String o = "task=" + String(s.exc_task);
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
   snprintf(b, sizeof(b), " pc=0x%08x cause=0x%x vaddr=0x%08x", (unsigned)s.exc_pc, (unsigned)s.ex_info.exc_cause, (unsigned)s.ex_info.exc_vaddr); o += b;
   o += " elf="; o += String((const char *)s.app_elf_sha256).substring(0, 16);
   o += "\nbacktrace:";
   for (uint32_t i = 0; i < s.exc_bt_info.depth && i < 16; i++) { snprintf(b, sizeof(b), " 0x%08x", (unsigned)s.exc_bt_info.bt[i]); o += b; }
   if (s.exc_bt_info.corrupted) o += " (unvollständig)";
+#else   // RISC-V (z. B. ESP32-C3): kein Backtrace im Gerät, nur Register
+  snprintf(b, sizeof(b), " pc=0x%08x mcause=0x%x mtval=0x%08x ra=0x%08x", (unsigned)s.exc_pc, (unsigned)s.ex_info.mcause,
+           (unsigned)s.ex_info.mtval, (unsigned)s.ex_info.ra); o += b;
+  o += " elf="; o += String((const char *)s.app_elf_sha256).substring(0, 16);
+#endif
   static char reason[200];
   if (esp_core_dump_get_panic_reason(reason, sizeof(reason)) == ESP_OK) { reason[sizeof(reason) - 1] = 0; o += "\ngrund: "; o += reason; }
   o += "\n";
