@@ -17,7 +17,7 @@ Samsung-TV (Tizen 9)                                   ESP32 + LED-Streifen
 | Ordner | Inhalt |
 |---|---|
 | `tv-app/` | App für den Fernseher (Tizen .NET). Basiert auf [TizenAmbilight](https://github.com/RitwickVerma/TizenAmbilight) (MIT) und ist um die Menü-Erkennung, die automatische ESP32-Suche und das Statuspaket erweitert. Die Bild-Dump-Funktion des Originals ist entfernt. |
-| `esp32-firmware/` | Firmware für den ESP32 (Arduino-Core 3.x, ohne weitere Bibliotheken) |
+| `esp32-firmware/` | Firmware für den ESP32 (Arduino-Core 3.x und Bibliothek NimBLE-Arduino 2.5.2) |
 | `.github/workflows/` | baut beides automatisch auf GitHub |
 
 ## Stand

@@ -375,6 +375,7 @@ namespace TizenAmbilight
                 }
             }
             Interlocked.Increment(ref Cycles);
+            NewData.Set();   // AmbiSync 1.6.2: die Hauptschleife sendet sofort, statt fest zu schlafen
             int next = (i0 + armed) % pz;
             // AmbiSync: Zeit für einen kompletten Umlauf (jeder Messpunkt einmal neu) - fürs Statuspaket
             if (next < i0 || armed >= pz)
@@ -395,6 +396,10 @@ namespace TizenAmbilight
             }
             _cur = next;
         }
+        /// <summary>AmbiSync 1.6.2: wird nach jedem neu gemessenen Punktpaar gesetzt. Die Hauptschleife wartet
+        /// darauf statt auf Thread.Sleep (der auf dem Fernseher nur ~20-ms-genau ist: aus 40 ms wurden 60-75 ms,
+        /// nur ~13 Bilder/s, und frische Messwerte lagen bis zu ein Bild lang ungenutzt herum).</summary>
+        public static readonly AutoResetEvent NewData = new AutoResetEvent(false);
         static long _ringT0;
         static int[] _ringVal; static bool[] _ringHave; static int _ringPz;   // letzter vollständiger Umlauf
         public static volatile float RingMsF;
@@ -411,9 +416,10 @@ namespace TizenAmbilight
             {
                 if (_mz == null) return 0;
                 int pz = _pz;
-                // vollständigen Umlauf nehmen, solange er zur aktuellen Messpunkt-Liste passt; sonst (Anlauf) die laufenden Werte
-                bool ring = _ringVal != null && _ringPz == pz && _ringVal.Length == pz * 3;
-                int[] val = ring ? _ringVal : _val; bool[] have = ring ? _ringHave : _have;
+                // AmbiSync 1.6.2: immer die laufenden Werte, jeder Messpunkt sofort nach seiner Messung. Auf den
+                // fertigen Umlauf zu warten kostete in einer Simulation der ganzen Kette ~30-60 ms Verzögerung; die
+                // kurze Mischung aus alter und neuer Szene nach einem Schnitt glättet der ESP32 (ab Firmware 1.6.8).
+                int[] val = _val; bool[] have = _have;
                 if (_snapZ == null || _snapZ.Length < pz) { _snapZ = new int[pz]; _snapV = new int[pz * 3]; }
                 for (int k = 0; k < pz; k++)
                 {

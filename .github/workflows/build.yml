@@ -70,6 +70,8 @@ jobs:
           arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.3.12
+          # Bluetooth läuft ab Firmware 1.6.0 über NimBLE (Bluedroid braucht ~65 KB RAM, das passt neben WLAN nicht)
+          arduino-cli lib install "NimBLE-Arduino@2.5.2"
       - name: Firmware bauen
         run: |
           arduino-cli compile --fqbn esp32:esp32:${{ matrix.board }}:PartitionScheme=min_spiffs --warnings default \

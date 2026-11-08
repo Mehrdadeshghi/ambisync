@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "de.mehrdad.AmbiSync";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "ambisync-1.6.1 (base TizenAmbilight v6)";
+        public const string Version = "ambisync-1.6.2 (base TizenAmbilight v6)";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -979,7 +979,12 @@ namespace TizenAmbilight
                     // ---- RATE CAP --------------------------------------------------------------
                     // Skip whole frames rather than shave work: the capture call dominates a frame,
                     // so capping the rate is what actually saves power on the TV.
-                    if (cfg.TargetFps > 0)
+                    if ((st.BackendActive ?? "").StartsWith("ppi", StringComparison.Ordinal))
+                    {
+                        // AmbiSync 1.6.2: bei der Ersatzquelle auf den nächsten Messwert warten statt zu schlafen
+                        PpiCapture.NewData.WaitOne(100);
+                    }
+                    else if (cfg.TargetFps > 0)
                     {
                         int targetMs = 1000 / cfg.TargetFps;
                         // A frozen picture (menu, pause, loading) needs even fewer updates. The

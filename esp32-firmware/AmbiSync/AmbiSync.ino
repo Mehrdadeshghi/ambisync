@@ -13,7 +13,7 @@
   Erster Start: Der ESP32 öffnet das WLAN "AmbiSync-Setup" (Passwort: ambisync-setup).
   Verbinden, http://192.168.4.1 öffnen, Heim-WLAN eintragen.
 
-  Benötigt: Arduino-ESP32-Core 3.x. Keine weiteren Bibliotheken.
+  Benötigt: Arduino-ESP32-Core 3.x und die Bibliothek "NimBLE-Arduino" (getestet 2.5.2, Bibliotheksverwalter).
 */
 
 #include <WiFi.h>
@@ -23,8 +23,9 @@
 #include <AsyncUDP.h>
 #include <Preferences.h>
 #include <Update.h>
-#include "esp32-hal-rmt.h"
+#include "driver/rmt_tx.h"
 #include <atomic>
+#include "esp_core_dump.h"
 #include "webui.h"
 
 // Bluetooth-Test: die TV-App kann die Farben per Bluetooth LE statt per WLAN schicken (Einstellung "ble",
@@ -33,11 +34,15 @@
 #define AMBI_BLE 1
 #endif
 #if AMBI_BLE
-#include <BLEDevice.h>
-#include <BLEServer.h>
+// NimBLE statt Bluedroid: gemessen braucht Bluedroid ~65 KB Arbeitsspeicher, das passt neben WLAN und
+// Weboberfläche nicht. Bibliothek "NimBLE-Arduino" (h2zero), getestet mit 2.5.2.
+#include <NimBLEDevice.h>
 #include <esp_mac.h>
+#include <esp_bt.h>
 #endif
 static volatile bool bleConnected = false;
+static volatile uint16_t bleMtu = 0;      // ausgehandelte MTU (0 = noch keine)
+static volatile int bleMtuNote = 0;       // Fehlercode, falls der ESP32 den MTU-Austausch nicht anstoßen konnte
 static volatile uint32_t bleWrites = 0, bleBytes = 0, bleConnects = 0;
 static bool bleRunning = false;
 static uint64_t bleMacNum = 0;      // eigene Bluetooth-Adresse als Zahl (geht so durch den Steuerkanal)
@@ -61,9 +66,24 @@ HWCDC usbLog;
 #endif
 
 static const int LOG_LINES = 40, LOG_W = 160;   // klein halten: jeder Puffer kostet Arbeitsspeicher
-static char logRing[LOG_LINES][LOG_W];
-static int logHead = 0;
-static uint32_t logSeq = 0;
+// Im ".noinit"-Speicher: übersteht Absturz und Software-Neustart (nicht Stromausfall). So zeigt /api/log
+// auch die Zeilen kurz vor einem Absturz. logInit() prüft beim Start, ob der Inhalt gültig ist.
+__NOINIT_ATTR static char logRing[LOG_LINES][LOG_W];
+__NOINIT_ATTR static int logHead;
+__NOINIT_ATTR static uint32_t logSeq;
+__NOINIT_ATTR static uint32_t logMagic;
+__NOINIT_ATTR static uint32_t crashCount;   // Abstürze hintereinander (für den abgesicherten Modus)
+static const uint32_t LOG_MAGIC = 0xA3B5106Eu;
+static bool safeMode = false;               // nach 2 Abstürzen hintereinander: ohne Bluetooth und LED-Ausgabe starten
+
+void logInit() {
+  esp_reset_reason_t r = esp_reset_reason();
+  bool crashed = r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT || r == ESP_RST_WDT;
+  bool kept = logMagic == LOG_MAGIC && logHead >= 0 && logHead < LOG_LINES && (crashed || r == ESP_RST_SW);
+  if (!kept) { memset(logRing, 0, sizeof(logRing)); logHead = 0; logSeq = 0; crashCount = 0; logMagic = LOG_MAGIC; }
+  else for (int i = 0; i < LOG_LINES; i++) logRing[i][LOG_W - 1] = 0;   // sicher abschließen
+  crashCount = crashed ? crashCount + 1 : 0;
+}
 static portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED;
 
 void outRaw(const char *s) {
@@ -115,12 +135,13 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.5.3"
+#define FW_VERSION "1.6.8"
 
+// RMT-Speicher des Kanals (Symbole): mehr Puffer = weniger anfällig, wenn WLAN-Interrupts das Nachfüllen verzögern
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
-#define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
+#define AMB_RMT_SYMBOLS (SOC_RMT_MEM_WORDS_PER_CHANNEL * 4)
 #else
-#define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_2
+#define AMB_RMT_SYMBOLS (SOC_RMT_MEM_WORDS_PER_CHANNEL * 2)
 #endif
 
 // ------------------------------------------------------------------ Grenzen
@@ -323,6 +344,7 @@ static volatile uint32_t testUntilMs = 0;
 static char tvStatusBuf[1401];
 static volatile uint32_t tvStatusMs = 0;
 static volatile uint32_t tvIpNum = 0;
+static volatile bool tvPpi = false;   // TV-App nutzt die Ersatzquelle (Samsung-Farbmessung, DRM): wenige, verrauschte Messpunkte
 static portMUX_TYPE tvMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Ausgabe-Statistik
@@ -333,7 +355,11 @@ static volatile int estCurrent = 0;
 static volatile bool limiting = false;
 
 // ------------------------------------------------------------------ LED-Ausgabe (RMT, ohne Bibliothek)
-static rmt_data_t *rmtBuf = nullptr;
+// Der "Bytes-Encoder" des RMT-Treibers wandelt die Farbbytes erst beim Senden in WS2812-Takte um. Früher lag
+// dafür ein Puffer mit 24 Takten je LED im Speicher (490 LEDs = 47 KB am Stück); jetzt nur 3 Byte je LED.
+static rmt_channel_handle_t rmtCh = nullptr;
+static rmt_encoder_handle_t rmtEnc = nullptr;
+static uint8_t rmtWire[MAX_LEDS * 3];   // Bytes in Leitungs-Reihenfolge (GRB ...)
 static int rmtLeds = 0;
 static int rmtPin = -1;
 static volatile bool ledReinit = true;
@@ -351,9 +377,10 @@ void analogOff() {
 }
 
 bool ledInit() {
-  if (rmtPin >= 0) { rmtDeinit(rmtPin); rmtPin = -1; }
+  if (rmtCh) { rmt_tx_wait_all_done(rmtCh, 100); rmt_disable(rmtCh); rmt_del_channel(rmtCh); rmtCh = nullptr; }
+  if (rmtEnc) { rmt_del_encoder(rmtEnc); rmtEnc = nullptr; }
+  rmtPin = -1;
   analogOff();
-  if (rmtBuf) { free(rmtBuf); rmtBuf = nullptr; }
   rmtLeds = cfg.ledCount;
   if (cfg.stripType == 1) {
     int pins[4] = {cfg.pinR, cfg.pinG, cfg.pinB, cfg.pinW};
@@ -370,13 +397,24 @@ bool ledInit() {
     LOG("     Der ganze Streifen zeigt die Durchschnittsfarbe des Bildes (%d Zonen)", rmtLeds);
     return true;
   }
-  // nur so groß wie nötig (24 Takte je LED, 4 Byte je Takt): 260 LEDs = 25 KB statt immer 47 KB
-  rmtBuf = (rmt_data_t *)malloc(sizeof(rmt_data_t) * max(1, rmtLeds) * 24);
-  if (!rmtBuf) { LOG("LED: FEHLER – kein Speicher für %d LEDs", rmtLeds); rmtPin = -1; return false; }
-  // 10 MHz = 100 ns pro Takt
-  if (!rmtInit(cfg.ledPin, RMT_TX_MODE, AMB_RMT_MEM, 10000000)) {
-    LOG("LED: FEHLER – Ausgang auf GPIO %d lässt sich nicht starten", cfg.ledPin);
-    rmtPin = -1;
+  rmt_tx_channel_config_t tc = {};
+  tc.gpio_num = (gpio_num_t)cfg.ledPin;
+  tc.clk_src = RMT_CLK_SRC_DEFAULT;
+  tc.resolution_hz = 10000000;            // 10 MHz = 100 ns pro Takt
+  tc.mem_block_symbols = AMB_RMT_SYMBOLS;
+  tc.trans_queue_depth = 2;
+  esp_err_t e = rmt_new_tx_channel(&tc, &rmtCh);
+  if (e != ESP_OK) { rmtCh = nullptr; LOG("LED: FEHLER – Ausgang auf GPIO %d lässt sich nicht starten (%s)", cfg.ledPin, esp_err_to_name(e)); return false; }
+  rmt_bytes_encoder_config_t ec = {};
+  ec.bit0.level0 = 1; ec.bit0.duration0 = 4; ec.bit0.level1 = 0; ec.bit0.duration1 = 8;   // 0: 0,4 µs high / 0,8 µs low
+  ec.bit1.level0 = 1; ec.bit1.duration0 = 8; ec.bit1.level1 = 0; ec.bit1.duration1 = 4;   // 1: 0,8 µs high / 0,4 µs low
+  ec.flags.msb_first = 1;
+  e = rmt_new_bytes_encoder(&ec, &rmtEnc);
+  if (e == ESP_OK) e = rmt_enable(rmtCh);
+  if (e != ESP_OK) {
+    LOG("LED: FEHLER – RMT-Encoder auf GPIO %d (%s)", cfg.ledPin, esp_err_to_name(e));
+    if (rmtEnc) { rmt_del_encoder(rmtEnc); rmtEnc = nullptr; }
+    rmt_del_channel(rmtCh); rmtCh = nullptr;
     return false;
   }
   rmtPin = cfg.ledPin;
@@ -462,25 +500,14 @@ void ledShow(const uint8_t *rgb) {
     }
     return;
   }
-  if (rmtPin < 0 || !rmtBuf) return;
+  if (rmtPin < 0 || !rmtCh || !rmtEnc) return;
   const uint8_t *ord = ORDER[cfg.colorOrder];
-  size_t k = 0;
-  for (int i = 0; i < rmtLeds; i++) {
-    for (int c = 0; c < 3; c++) {
-      uint8_t v = rgb[i * 3 + ord[c]];
-      for (int bit = 7; bit >= 0; bit--) {
-        if (v & (1 << bit)) {  // 1: 0,8 µs high / 0,45 µs low
-          rmtBuf[k].level0 = 1; rmtBuf[k].duration0 = 8;
-          rmtBuf[k].level1 = 0; rmtBuf[k].duration1 = 4;
-        } else {               // 0: 0,4 µs high / 0,85 µs low
-          rmtBuf[k].level0 = 1; rmtBuf[k].duration0 = 4;
-          rmtBuf[k].level1 = 0; rmtBuf[k].duration1 = 8;
-        }
-        k++;
-      }
-    }
-  }
-  rmtWrite(rmtPin, rmtBuf, k, RMT_WAIT_FOR_EVER);
+  int cnt = min(rmtLeds, MAX_LEDS);
+  for (int i = 0; i < cnt; i++)
+    for (int c = 0; c < 3; c++) rmtWire[i * 3 + c] = rgb[i * 3 + ord[c]];
+  rmt_transmit_config_t txc = {};
+  if (rmt_transmit(rmtCh, rmtEnc, rmtWire, (size_t)cnt * 3, &txc) == ESP_OK)
+    rmt_tx_wait_all_done(rmtCh, 100);   // rmtWire darf erst nach dem Senden wieder beschrieben werden
 }
 
 // ------------------------------------------------------------------ Hilfen
@@ -619,6 +646,8 @@ void onTvStatus(AsyncUDPPacket &pkt) {
   tvStatusMs = millis();
   tvIpNum = (uint32_t)pkt.remoteIP();
   portEXIT_CRITICAL(&tvMux);
+  static const char PPI[] = "\"backend\":\"ppi";
+  tvPpi = memmem(pkt.data(), n, PPI, sizeof(PPI) - 1) != nullptr;
 }
 
 // Antwort auf "AMBISYNC-DISCOVER": "AMBISYNC 1 leds=<n> port=21324"
@@ -638,6 +667,7 @@ static uint8_t frame[MAX_LEDS * 3];
 static uint8_t viewWant[MAX_LEDS * 3];   // was der ESP32 gerade anzeigen will (vom TV/Test), für die Live-Ansicht
 
 void renderTask(void *) {
+  bool safeLogged = false;
   const uint32_t periodMs = 16;  // ~60 Bilder/s
   uint32_t fpsT0 = millis(), fpsN = 0, rtN0 = 0;
   float idleFade = 0;            // 0 = Echtzeit, 1 = Leerlauf (für weiches Ausblenden)
@@ -648,7 +678,8 @@ void renderTask(void *) {
       ledReinit = false;
       memset(frame, 0, sizeof(frame));
       ledShow(frame);                 // alter Streifen (alte Länge/Pin) aus
-      ledInit();
+      if (safeMode) { if (!safeLogged) { LOG("ABGESICHERTER MODUS: LED-Ausgabe bleibt aus"); safeLogged = true; } }
+      else ledInit();
       memset(frame, 0, sizeof(frame));
       int keep = rmtLeds; rmtLeds = MAX_LEDS; ledShow(frame); rmtLeds = keep;   // auch LEDs hinter dem neuen Ende aus
       for (int i = 0; i < MAX_LEDS * 3; i++) { springPos[i] = 0; springVel[i] = 0; ditherAcc[i] = 0; lastOutF[i] = 0; }
@@ -688,7 +719,8 @@ void renderTask(void *) {
       else { ir = ir * cfg.idleBrightness / 255; ig = ig * cfg.idleBrightness / 255; ib = ib * cfg.idleBrightness / 255; }
       // ---- Bildabstand messen (nur Statistik + Gültigkeitsdauer der Pakete) ----
       uint32_t fr = rtFrames;
-      if (fr != lastFrameSeen) {
+      bool newFrame = fr != lastFrameSeen;
+      if (newFrame) {
         lastFrameSeen = fr;
         uint32_t gap = t0 - lastFrameAt;
         if (lastFrameAt != 0 && gap >= 8 && gap < 1500) frameIntervalMs += ((float)gap - frameIntervalMs) * 0.2f;
@@ -697,13 +729,73 @@ void renderTask(void *) {
       // ---- kritisch gedämpfte Feder zum aktuellen Ziel ----
       // t50 = Zeit bis 50 % einer Sprungänderung; omega = 1,678 / t50 (Lösung von 1-(1+wt)e^-wt = 0,5)
       float t50 = 20.0f + effSmoothing() * 2.5f;            // Film (40) -> 120 ms, Sport (20) -> 70, Spiel (5) -> 32, Ruhig (95) -> 257
+      // Nie kürzer als 1,5 Bildabstände der Quelle: liefert der Fernseher nur wenige Bilder/s (z. B. 5/s bei
+      // DRM-Inhalten über die Samsung-Farbmessung oder per Bluetooth), gleitet die Farbe durchgehend von
+      // Bild zu Bild statt alle 200 ms zu springen und dann stillzustehen. Mindestens 80 ms gegen Flackern.
+      t50 = max(t50, min(800.0f, max(80.0f, 1.5f * (float)frameIntervalMs)));
+      // Ersatzquelle "ppi": nur 10 Messpunkte am Rand, nacheinander gemessen und auf alle LEDs verteilt. Jeder
+      // neue Messwert weicht stark vom vorigen ab -> ohne lange Glättung springen die Farben ständig hin und her.
+      portENTER_CRITICAL(&frameMux);
+      memcpy(want, target, n * 3);
+      portEXIT_CRITICAL(&frameMux);
+      // Szenenwechsel erkennen: das Rauschen der Ersatzquelle trifft einzelne Messpunkte, der Mittelwert über
+      // alle LEDs bleibt fast gleich. Springt der Mittelwert (je Farbkanal) deutlich, ist es ein echter Wechsel:
+      // dann 0,5 s schnell folgen, sonst ruhig glätten. So bleibt das Licht ruhig, ohne bei Schnitten nachzuhinken.
+      static float meanSlow[3] = {-1, -1, -1};
+      static uint32_t fastUntil = 0;
+      bool cutNow = false;
+      if (newFrame && n > 0) {
+        float m[3] = {0, 0, 0};
+        for (int i = 0; i < n; i++) { m[0] += want[i * 3]; m[1] += want[i * 3 + 1]; m[2] += want[i * 3 + 2]; }
+        float jump = 0;
+        for (int c = 0; c < 3; c++) {
+          m[c] /= n;
+          if (meanSlow[c] < 0) meanSlow[c] = m[c];
+          jump = max(jump, fabsf(m[c] - meanSlow[c]));
+          meanSlow[c] += (m[c] - meanSlow[c]) * 0.35f;
+        }
+        if (jump > 22.0f) { fastUntil = t0 + 500; cutNow = true; }   // 22: ein einzelner Messpunkt (1/10 der LEDs) muss um >200 springen
+      }
+      bool sceneCut = fastUntil && (int32_t)(fastUntil - t0) > 0;
+      // Ausreißer-Filter für die Ersatzquelle (in einer Simulation der ganzen Kette abgestimmt): sie misst auch bei
+      // stehendem Bild jedes Mal etwas anderes. Eine harte Schwelle (1.6.5/1.6.6) ließ einzelne große Ausreißer
+      // durch -> Blinken. Jetzt je Kanal, nur bei neuen Bildern vom Fernseher:
+      //  - kleine Abweichung (<= PPI_G): sanft mitteln (Anteil PPI_A je Bild) -> Standbild ruhig
+      //  - große Abweichung einmal: Ausreißer, nur wenig folgen; zweimal in dieselbe Richtung: echt, sofort übernehmen
+      //  - Szenenwechsel (Mittelwert aller LEDs springt): alles sofort übernehmen
+      static uint16_t est16[MAX_LEDS * 3];   // gefilterter Wert x16
+      static int8_t pend[MAX_LEDS * 3];      // Richtung des letzten großen Ausreißers
+      static uint8_t rawPrev[MAX_LEDS * 3];  // letzter Rohwert: nur GEÄNDERTE Werte sind neue Messungen
+      static const int PPI_G = 40;            // abgestimmt in der Simulation mit TV-App 1.6.2 (sendet nach jedem Messpunktpaar)
+      static const float PPI_A = 0.12f;
+      if (tvPpi) {
+        if (newFrame) {
+          for (int i = 0; i < n * 3; i++) {
+            // TV-App 1.6.2 schickt nach jedem neuen Messpunktpaar ein Bild; ein Ausreißer steht dann in mehreren
+            // Bildern hintereinander und würde als "zweimal groß = echt" durchgehen. Darum zählt nur eine Änderung.
+            if (want[i] == rawPrev[i] && !cutNow) continue;
+            rawPrev[i] = want[i];
+            int e = est16[i], d = (int)want[i] * 16 - e;
+            if (cutNow) { e = want[i] * 16; pend[i] = 0; }
+            else if (abs(d) <= PPI_G * 16) { e += (int)(d * PPI_A); pend[i] = 0; }
+            else {
+              int8_t sg = d > 0 ? 1 : -1;
+              if (pend[i] == sg) { e = want[i] * 16; pend[i] = 0; }
+              else { pend[i] = sg; e += (int)(sg * PPI_G * 16 * PPI_A); }
+            }
+            est16[i] = (uint16_t)constrain(e, 0, 255 * 16);
+          }
+        }
+        for (int i = 0; i < n * 3; i++) want[i] = (uint8_t)((est16[i] + 8) >> 4);
+        t50 = 30.0f;   // nur noch zwischen den Bildern des Fernsehers gleiten; das Filtern macht der Ausreißer-Filter
+      } else {
+        for (int i = 0; i < n * 3; i++) { est16[i] = want[i] * 16; pend[i] = 0; rawPrev[i] = want[i]; }
+      }
+      if (!tvPpi && sceneCut) t50 = min(t50, max(80.0f, 1.0f * (float)frameIntervalMs));
       glideMsNow = t50;
       float w = 1.678f / (t50 / 1000.0f);
       float dt = constrain((float)(t0 - lastTick), 1.0f, 100.0f) / 1000.0f;
       float ex = expf(-w * dt);
-      portENTER_CRITICAL(&frameMux);
-      memcpy(want, target, n * 3);
-      portEXIT_CRITICAL(&frameMux);
       for (int i = 0; i < n * 3; i++) {
         float T = want[i], e = springPos[i] - T, v = springVel[i];
         float c = v + w * e;
@@ -742,7 +834,9 @@ void renderTask(void *) {
     int mA = (int)(sumF * cfg.mAPerChannel / 255.0f) + n;  // + ~1 mA Ruhestrom je LED
     estCurrent = mA;
     limiting = false;
-    if (cfg.maxCurrent > 0 && mA > cfg.maxCurrent) {
+    // Nur für WS2812B: beim normalen RGB-Streifen sind die "LEDs" nur Zonen, die Schätzung passt dort nicht
+    // (490 Zonen bei Weiß = ~29 A geschätzt -> der Streifen würde grundlos auf ~34 % gedimmt).
+    if (!analogOn && cfg.maxCurrent > 0 && mA > cfg.maxCurrent) {
       float s = (float)(cfg.maxCurrent - n) / max(1, mA - n);
       if (s < 0) s = 0;
       bscale *= s;
@@ -900,7 +994,7 @@ void handleStatus() {
   j += "\"ble\":{\"on\":" + String(cfg.ble ? "true" : "false") + ",\"running\":" + String(bleRunning ? "true" : "false") +
        ",\"connected\":" + String(bleConnected ? "true" : "false") + ",\"writes\":" + String((uint32_t)bleWrites) +
        ",\"bytes\":" + String((uint32_t)bleBytes) + ",\"connects\":" + String((uint32_t)bleConnects) +
-       ",\"mac\":\"" + String(bleMacStr) + "\",\"built\":" + String(AMBI_BLE ? "true" : "false") + "},";
+       ",\"mtu\":" + String((unsigned)bleMtu) + ",\"mac\":\"" + String(bleMacStr) + "\",\"built\":" + String(AMBI_BLE ? "true" : "false") + "},";
   static char tvCopy[1401];
   portENTER_CRITICAL(&tvMux);
   memcpy(tvCopy, tvStatusBuf, sizeof(tvCopy));
@@ -1088,17 +1182,35 @@ void handleTvControl() {
 #define BLE_CHR_UUID "a3b5f002-7a6d-4b1e-9c2f-616d62690001"
 
 #if AMBI_BLE
-class AmbiBleServerCb : public BLEServerCallbacks {
-  void onConnect(BLEServer *) override { bleConnected = true; bleConnects++; }
-  void onDisconnect(BLEServer *) override { bleConnected = false; BLEDevice::startAdvertising(); }
+// NimBLE-Arduino meldet sich beim Arduino-Core nicht als BLE-Nutzer an; ohne das gäbe der Core den
+// BLE-Speicher des Controllers schon beim Start frei und NimBLE könnte nicht starten. Ohne Bluetooth-Test
+// gibt setup() den Speicher selbst frei.
+bool bleInUse() { return true; }
+
+class AmbiBleServerCb : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer *s, NimBLEConnInfo &ci) override {
+    bleConnected = true; bleConnects++;
+    // kurzes Verbindungsintervall (7,5-15 ms) und lange Pakete (DLE 251 Byte): ein Bild mit 490 LEDs sind
+    // 3 Schreibvorgänge à ~500 Byte, das braucht sonst mehrere Intervalle und die Farben kommen ruckelig an
+    s->updateConnParams(ci.getConnHandle(), 6, 12, 0, 300);
+    s->setDataLen(ci.getConnHandle(), 251);
+    // Größere Pakete selbst aushandeln: der Fernseher fragt zwar nach 517, bleibt aber gemessen bei 23 Byte
+    // (20 Byte Nutzlast -> ~90 Schreibvorgänge je Bild, nur 2 Bilder/s). Den MTU-Austausch darf auch der
+    // ESP32 anstoßen; das Ergebnis gilt für die ganze Verbindung.
+    int rc = ble_gattc_exchange_mtu(ci.getConnHandle(), nullptr, nullptr);
+    if (rc != 0) bleMtuNote = rc;
+  }
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo &) override { bleMtu = mtu; }
+  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int) override { bleConnected = false; }   // Werbung startet NimBLE selbst neu
 };
-class AmbiBleChrCb : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *c) override {
-    size_t n = c->getLength();
+class AmbiBleChrCb : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &) override {
+    NimBLEAttValue v = c->getValue();
+    size_t n = v.size();
     if (n < 2) return;
     bleWrites++; bleBytes += n;
     rtPackets++;
-    handleRealtime(c->getData(), n, IPAddress(rtSourceIp), true);
+    handleRealtime(v.data(), n, IPAddress(rtSourceIp), true);
   }
 };
 
@@ -1108,20 +1220,22 @@ void bleStart() {
   bleMacNum = 0;
   for (int i = 0; i < 6; i++) bleMacNum = (bleMacNum << 8) | mac[i];
   snprintf(bleMacStr, sizeof(bleMacStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  if (!BLEDevice::init("AmbiSync")) { LOG("Bluetooth: Start fehlgeschlagen"); return; }
-  BLEDevice::setMTU(517);
-  BLEServer *srv = BLEDevice::createServer();
+  if (!NimBLEDevice::init("AmbiSync")) { LOG("Bluetooth: Start fehlgeschlagen"); return; }
+  // 515 statt 517: die TV-App schreibt Stücke von MTU-3 Byte, und ein Attribut darf höchstens 512 Byte haben
+  NimBLEDevice::setMTU(515);
+  NimBLEServer *srv = NimBLEDevice::createServer();
   srv->setCallbacks(new AmbiBleServerCb());
-  BLEService *svc = srv->createService(BLE_SVC_UUID);
-  BLECharacteristic *chr = svc->createCharacteristic(BLE_CHR_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  NimBLEService *svc = srv->createService(BLE_SVC_UUID);
+  NimBLECharacteristic *chr = svc->createCharacteristic(BLE_CHR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   chr->setCallbacks(new AmbiBleChrCb());
   svc->start();
-  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(BLE_SVC_UUID);
-  adv->setScanResponse(true);
-  BLEDevice::startAdvertising();
+  adv->setName("AmbiSync");
+  adv->enableScanResponse(true);
+  adv->start();
   bleRunning = true;
-  LOG("Bluetooth: an, Adresse %s, wartet auf den Fernseher (Speicher frei %u KB)", bleMacStr, (unsigned)(ESP.getFreeHeap() / 1024));
+  LOG("Bluetooth: an (NimBLE), Adresse %s, wartet auf den Fernseher (Speicher frei %u KB)", bleMacStr, (unsigned)(ESP.getFreeHeap() / 1024));
 }
 #else
 void bleStart() { LOG("Bluetooth: in dieser Firmware nicht enthalten (AMBI_BLE=0)"); }
@@ -1246,29 +1360,65 @@ void handleLog() {
   server.send(200, "text/plain; charset=utf-8", logText());
 }
 
+// Letzter Absturz aus dem Core-Dump im Flash (Partition "coredump"). Die Adressen dekodiert man mit
+// xtensa-esp32-elf-addr2line und der .elf-Datei mit passendem SHA256. POST /api/crash/clear löscht ihn.
+void handleCrash() {
+  if (!hostOk()) { server.send(403, "text/plain", ""); return; }
+  if (cfg.adminPass.length() && !server.authenticate("admin", cfg.adminPass.c_str())) { server.requestAuthentication(BASIC_AUTH, "AmbiSync"); return; }
+  server.sendHeader("Cache-Control", "no-store");
+  if (esp_core_dump_image_check() != ESP_OK) { server.send(200, "text/plain", "kein Absturzbericht im Flash"); return; }
+  static esp_core_dump_summary_t s;   // ~250 Byte, nicht auf den Stack
+  if (esp_core_dump_get_summary(&s) != ESP_OK) { server.send(500, "text/plain", "Absturzbericht nicht lesbar"); return; }
+  char b[96];
+  String o = "task=" + String(s.exc_task);
+  snprintf(b, sizeof(b), " pc=0x%08x cause=0x%x vaddr=0x%08x", (unsigned)s.exc_pc, (unsigned)s.ex_info.exc_cause, (unsigned)s.ex_info.exc_vaddr); o += b;
+  o += " elf="; o += String((const char *)s.app_elf_sha256).substring(0, 16);
+  o += "\nbacktrace:";
+  for (uint32_t i = 0; i < s.exc_bt_info.depth && i < 16; i++) { snprintf(b, sizeof(b), " 0x%08x", (unsigned)s.exc_bt_info.bt[i]); o += b; }
+  if (s.exc_bt_info.corrupted) o += " (unvollständig)";
+  static char reason[200];
+  if (esp_core_dump_get_panic_reason(reason, sizeof(reason)) == ESP_OK) { reason[sizeof(reason) - 1] = 0; o += "\ngrund: "; o += reason; }
+  o += "\n";
+  server.send(200, "text/plain; charset=utf-8", o);
+}
+
+void handleCrashClear() {
+  if (!authOk()) return;
+  esp_core_dump_image_erase();
+  LOG("Absturzbericht gelöscht");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void handleUpdateDone() {
   if (!authOk()) return;
+  // Ohne Admin-Passwort könnte jeder im WLAN eine fremde Firmware aufspielen.
+  if (cfg.adminPass.length() == 0) { server.send(403, "text/plain", "Update gesperrt: zuerst ein Admin-Passwort (min. 6 Zeichen) festlegen"); return; }
   bool ok = Update.isFinished() && !Update.hasError();
-  server.send(200, "text/plain", ok ? "OK – Neustart" : "Fehler beim Update");
+  server.send(200, "text/plain", ok ? String("OK – Neustart") : String("Fehler beim Update: ") + Update.errorString());
   delay(500);
   if (ok) ESP.restart();
 }
 
 void handleUpdateUpload() {
   if (!hostOk() || server.header("X-AmbiSync") != "1") return;
-  if (cfg.adminPass.length() && !server.authenticate("admin", cfg.adminPass.c_str())) return;
+  if (cfg.adminPass.length() == 0 || !server.authenticate("admin", cfg.adminPass.c_str())) return;
   HTTPUpload &up = server.upload();
+  static size_t nextLog = 0;
   if (up.status == UPLOAD_FILE_START) {
     testMode = TEST_OFF;
-    LOG("Firmware-Update: Upload beginnt (%s)", up.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+    if (Update.isRunning()) { Update.abort(); LOG("Firmware-Update: alter, abgebrochener Vorgang verworfen"); }
+    LOG("Firmware-Update: Upload beginnt (%s), Speicher frei %u KB", up.filename.c_str(), (unsigned)(ESP.getFreeHeap() / 1024));
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) LOG("Firmware-Update: FEHLER beim Start: %s", Update.errorString());
+    nextLog = 256 * 1024;
   } else if (up.status == UPLOAD_FILE_WRITE) {
-    if (Update.write(up.buf, up.currentSize) != up.currentSize) Update.printError(Serial);
+    if (Update.isRunning() && Update.write(up.buf, up.currentSize) != up.currentSize)
+      LOG("Firmware-Update: FEHLER beim Schreiben bei %u Bytes: %s", (unsigned)up.totalSize, Update.errorString());
+    if (up.totalSize >= nextLog) { LOG("Firmware-Update: %u KB empfangen", (unsigned)(up.totalSize / 1024)); nextLog += 256 * 1024; }
   } else if (up.status == UPLOAD_FILE_END) {
-    if (!Update.end(true)) Update.printError(Serial);
+    if (!Update.end(true)) LOG("Firmware-Update: FEHLER am Ende (%u Bytes): %s", (unsigned)up.totalSize, Update.errorString());
     else LOG("Firmware-Update: %u Bytes empfangen, OK", (unsigned)up.totalSize);
   } else if (up.status == UPLOAD_FILE_ABORTED) {
-    LOG("Firmware-Update abgebrochen");
+    LOG("Firmware-Update abgebrochen (Verbindung weg) bei %u Bytes", (unsigned)up.totalSize);
     Update.abort();
   }
 }
@@ -1288,6 +1438,8 @@ void setupWeb() {
   server.on("/api/test", HTTP_POST, handleTest);
   server.on("/api/scan", HTTP_GET, handleScan);
   server.on("/api/log", HTTP_GET, handleLog);
+  server.on("/api/crash", HTTP_GET, handleCrash);
+  server.on("/api/crash/clear", HTTP_POST, handleCrashClear);
   server.on("/api/leds", HTTP_GET, handleLeds);
   server.on("/api/reboot", HTTP_POST, []() { if (!authOk()) return; server.send(200, "application/json", "{\"ok\":true}"); delay(300); ESP.restart(); });
   server.on("/tv/control", HTTP_GET, handleTvControl);
@@ -1408,9 +1560,10 @@ void onWifiEvent(arduino_event_id_t ev, arduino_event_info_t info) {
 void printStatus() {
   uint32_t now = millis();
   if (cfg.ble)
-    LOG("BLUETOOTH | %s | Fernseher %s | %u Pakete (%u KB), %u Verbindungen | Adresse %s",
+    LOG("BLUETOOTH | %s | Fernseher %s | %u Pakete (%u KB), %u Verbindungen | MTU %u%s | Adresse %s",
         bleRunning ? "an" : "FEHLER beim Start", bleConnected ? "VERBUNDEN" : "nicht verbunden",
-        (unsigned)bleWrites, (unsigned)(bleBytes / 1024), (unsigned)bleConnects, bleMacStr);
+        (unsigned)bleWrites, (unsigned)(bleBytes / 1024), (unsigned)bleConnects, (unsigned)bleMtu,
+        bleMtuNote ? (" (MTU-Anfrage Fehler " + String(bleMtuNote) + ")").c_str() : "", bleMacStr);
   uint32_t lrt = lastRealtimeMs;
   bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   uint32_t tvMs = tvStatusMs;
@@ -1618,6 +1771,7 @@ void logEvents() {
 
 // ------------------------------------------------------------------ Start
 void setup() {
+  logInit();                  // vor dem ersten LOG()
   Serial.begin(115200);
 #ifdef AMB_USB_MIRROR
   usbLog.setTxTimeoutMs(0);   // nicht blockieren, wenn kein PC angeschlossen ist
@@ -1635,16 +1789,22 @@ void setup() {
   static const char *RR[] = {"unbekannt", "Einschalten", "extern", "Software-Neustart", "Absturz", "Watchdog (Interrupt)",
                              "Watchdog (Task)", "Watchdog", "Tiefschlaf", "Spannungseinbruch (Netzteil zu schwach?)", "SDIO"};
   int rr = (int)esp_reset_reason();
-  LOG("Start-Grund: %s", rr >= 0 && rr <= 10 ? RR[rr] : "?");
+  LOG("==== Neustart – Start-Grund: %s (Abstürze hintereinander: %u) ====", rr >= 0 && rr <= 10 ? RR[rr] : "?", (unsigned)crashCount);
+  if (esp_core_dump_image_check() == ESP_OK) LOG("Absturzbericht im Flash vorhanden: /api/crash");
   loadSettings();
+  if (crashCount >= 2) {
+    safeMode = true;
+    LOG("ABGESICHERTER MODUS: %u Abstürze hintereinander – Bluetooth und LED-Ausgabe bleiben diesmal aus, WLAN/Web/Update laufen (Einstellungen unverändert)", (unsigned)crashCount);
+  }
   LOG("Einstellungen: WLAN \"%s\", Name %s.local, Admin-Passwort %s, Streifen %s, Filter-IP %s",
       cfg.ssid.length() ? cfg.ssid.c_str() : "(keins)", cfg.hostname.c_str(), cfg.adminPass.length() ? "gesetzt" : "NICHT gesetzt",
       cfg.stripType == 1 ? (String("RGB R") + cfg.pinR + "/G" + cfg.pinG + "/B" + cfg.pinB).c_str() : (String(cfg.ledCount) + " WS2812B an GPIO " + cfg.ledPin).c_str(), cfg.allowIp.length() ? cfg.allowIp.c_str() : "(alle)");
-  // Bluetooth-Speicher: ohne Bluetooth-Test sofort freigeben (~30 KB mehr Arbeitsspeicher für WLAN und
-  // Weboberfläche). Mit Bluetooth nur den Teil für klassisches Bluetooth (das braucht AmbiSync nicht).
+  // Bluetooth-Speicher: ohne Bluetooth-Test nur den Controller-Speicher freigeben - genau das, was der
+  // Arduino-Core selbst tut, wenn Bluetooth nicht gebraucht wird. NICHT btMemRelease(): das gibt auch den
+  // Host-Speicher frei, und mit Bluetooth (Controller läuft im BTDM-Modus) den Classic-Teil, den der
+  // Controller trotzdem benutzt. Beides hat in 1.5.3 den Heap zerstört (Absturz in wifi_init -> tlsf_malloc).
 #if AMBI_BLE
-  if (!cfg.ble) btMemRelease(BT_MODE_BTDM);
-  else btMemRelease(BT_MODE_CLASSIC_BT);
+  if (!cfg.ble) esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
 #endif
   LOG("Arbeitsspeicher frei: %u KB", (unsigned)(ESP.getFreeHeap() / 1024));
   WiFi.onEvent(onWifiEvent);
@@ -1667,7 +1827,6 @@ void setup() {
 
   udpRt.listen(PORT_REALTIME);
   udpRt.onPacket(onRealtime);
-  if (cfg.ble) bleStart();
   udpDdp.listen(PORT_DDP);
   udpDdp.onPacket(onDdp);
   udpTv.listen(PORT_TVSTATUS);
@@ -1678,6 +1837,15 @@ void setup() {
 
   setupWeb();
   LOG("Web: Server läuft auf Port 80");
+  // Bluetooth erst nach dem Webserver: hängt oder stürzt es, bleiben Protokoll und Update per WLAN erreichbar.
+  // Zu wenig Speicher: Bluetooth hängt beim Start oder stürzt ab (mit Bluedroid gesehen: assert in hci_hal_env_init).
+  if (cfg.ble && !safeMode && ESP.getFreeHeap() < 50000) {
+    LOG("Bluetooth NICHT gestartet: nur %u KB frei (mindestens 50 KB nötig). Farben laufen per WLAN.", (unsigned)(ESP.getFreeHeap() / 1024));
+  } else if (cfg.ble && !safeMode) {
+    LOG("Bluetooth startet: frei %u B, größter Block %u B", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    bleStart();
+    LOG("Bluetooth gestartet: frei %u B, größter Block %u B", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+  }
   if (!apMode) LOG("Bereit. Warte auf den Fernseher ... (Statuszeile alle 10 s, 'hilfe' für Befehle)");
   if (!apMode && cfg.adminPass.length() == 0) LOG("WARNUNG: kein Admin-Passwort gesetzt – im Monitor: admin <passwort>");
 }
@@ -1702,6 +1870,7 @@ void sendBeacon() {
 }
 
 void loop() {
+  if (crashCount && millis() > 60000) crashCount = 0;   // 1 min stabil: Absturzzähler zurücksetzen
   handleSerial();
   logEvents();
   static uint32_t lastStatus = 0, lastApHint = 0;
