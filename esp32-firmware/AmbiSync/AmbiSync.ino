@@ -115,7 +115,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.5.3"
+#define FW_VERSION "1.5.4"
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define AMB_RMT_MEM RMT_MEM_NUM_BLOCKS_4
@@ -650,7 +650,19 @@ void renderTask(void *) {
       ledShow(frame);                 // alter Streifen (alte Länge/Pin) aus
       ledInit();
       memset(frame, 0, sizeof(frame));
-      int keep = rmtLeds; rmtLeds = MAX_LEDS; ledShow(frame); rmtLeds = keep;   // auch LEDs hinter dem neuen Ende aus
+      // auch LEDs hinter dem neuen Ende aus: dafür kurz einen Puffer für die volle Länge leihen. Der feste
+      // Puffer ist nur so lang wie der Streifen (1.5.3 schrieb hier darüber hinaus -> Absturz beim Start).
+      if (rmtPin >= 0 && rmtBuf && rmtLeds < MAX_LEDS) {
+        rmt_data_t *own = rmtBuf;
+        rmt_data_t *big = (rmt_data_t *)malloc(sizeof(rmt_data_t) * MAX_LEDS * 24);
+        if (big) {
+          int keep = rmtLeds;
+          rmtBuf = big; rmtLeds = MAX_LEDS;
+          ledShow(frame);
+          rmtLeds = keep; rmtBuf = own;
+          free(big);
+        }
+      }
       for (int i = 0; i < MAX_LEDS * 3; i++) { springPos[i] = 0; springVel[i] = 0; ditherAcc[i] = 0; lastOutF[i] = 0; }
     }
     int n = rmtLeds;
@@ -1640,11 +1652,10 @@ void setup() {
   LOG("Einstellungen: WLAN \"%s\", Name %s.local, Admin-Passwort %s, Streifen %s, Filter-IP %s",
       cfg.ssid.length() ? cfg.ssid.c_str() : "(keins)", cfg.hostname.c_str(), cfg.adminPass.length() ? "gesetzt" : "NICHT gesetzt",
       cfg.stripType == 1 ? (String("RGB R") + cfg.pinR + "/G" + cfg.pinG + "/B" + cfg.pinB).c_str() : (String(cfg.ledCount) + " WS2812B an GPIO " + cfg.ledPin).c_str(), cfg.allowIp.length() ? cfg.allowIp.c_str() : "(alle)");
-  // Bluetooth-Speicher: ohne Bluetooth-Test sofort freigeben (~30 KB mehr Arbeitsspeicher für WLAN und
-  // Weboberfläche). Mit Bluetooth nur den Teil für klassisches Bluetooth (das braucht AmbiSync nicht).
+  // Bluetooth-Speicher: ohne Bluetooth-Test freigeben (mehr Arbeitsspeicher für WLAN und Weboberfläche).
+  // Genau das macht der Arduino-Kern sonst selbst, wenn keine Bluetooth-Bibliothek eingebunden ist.
 #if AMBI_BLE
-  if (!cfg.ble) btMemRelease(BT_MODE_BTDM);
-  else btMemRelease(BT_MODE_CLASSIC_BT);
+  if (!cfg.ble) btMemRelease(BT_MODE_BLE);
 #endif
   LOG("Arbeitsspeicher frei: %u KB", (unsigned)(ESP.getFreeHeap() / 1024));
   WiFi.onEvent(onWifiEvent);
