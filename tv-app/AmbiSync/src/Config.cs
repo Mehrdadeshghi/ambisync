@@ -264,7 +264,7 @@ namespace TizenAmbilight
             if (c.BarThresh < 17) c.BarThresh = 17;   // bars read exactly 16 and the test is `< thr`,
                                                       // so anything <= 16 matches nothing at all
             if (c.BarThresh > 80) c.BarThresh = 80;
-            c.BarHold = PrefInt("barHold", 8);
+            c.BarHold = PrefInt("barHold", 4);   // AmbiSync 1.6.3: ~1 s statt ~2 s bis neue Balken gelten
             if (c.BarHold < 1) c.BarHold = 1;
             if (c.BarHold > 90) c.BarHold = 90;
             c.Punch = PrefDouble("punch", 0.0);   // AmbiSync: Helligkeits-Überschwinger bei Schnitten wirkte wie Flackern

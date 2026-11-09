@@ -42,7 +42,12 @@
 #endif
 static volatile bool bleConnected = false;
 static volatile uint16_t bleMtu = 0;      // ausgehandelte MTU (0 = noch keine)
-static volatile int bleMtuNote = 0;       // Fehlercode, falls der ESP32 den MTU-Austausch nicht anstoßen konnte
+static volatile int bleMtuNote = 0;
+static volatile int bleDiscReason = 0, bleDiscs = 0;
+static volatile uint16_t bleConnHandle = 0xFFFF;
+// Blink-Diagnose (je 10 s im Log): Szenenwechsel, Ausreißer, sofort übernommene Ausreißer, große Sprünge am Ausgang,
+// Leerlauf-Einblendung, Strombegrenzung, Quellenwechsel Bluetooth/WLAN
+static uint32_t dgCut = 0, dgOut = 0, dgSnap = 0, dgBig = 0, dgIdle = 0, dgLim = 0, dgSrc = 0, dgFrames = 0;   // letzter Trenngrund (NimBLE-Code, 0x208 = Zeitüberschreitung)       // Fehlercode, falls der ESP32 den MTU-Austausch nicht anstoßen konnte
 static volatile uint32_t bleWrites = 0, bleBytes = 0, bleConnects = 0;
 static bool bleRunning = false;
 static uint64_t bleMacNum = 0;      // eigene Bluetooth-Adresse als Zahl (geht so durch den Steuerkanal)
@@ -135,7 +140,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.6.8"
+#define FW_VERSION "1.6.17"
 
 // RMT-Speicher des Kanals (Symbole): mehr Puffer = weniger anfällig, wenn WLAN-Interrupts das Nachfüllen verzögern
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -145,7 +150,7 @@ const char *wlStatusName(int s) {
 #endif
 
 // ------------------------------------------------------------------ Grenzen
-static const int MAX_LEDS = 490;                 // Grenze des DRGB-Protokolls
+static const int MAX_LEDS = 300;                 // 1.6.14: 300 statt 490 (Grenze von DRGB), spart ~19 KB RAM - sonst reicht der Speicher nicht für Bluetooth
 static const int PORT_REALTIME = 21324;
 static const int PORT_DDP = 4048;
 static const int PORT_TVSTATUS = 21325;
@@ -178,6 +183,7 @@ struct Settings {
   int mAPerChannel = 20;      // WS2812B: ~20 mA pro Farbkanal bei voller Helligkeit
   int smoothing = 40;         // 0..95 %: Überblendzeit (40 % = genau ein Bildabstand des Fernsehers)
   int ble = 0;                // 1 = Farben vom TV per Bluetooth LE annehmen (Test)
+  int ledGamma = 22;          // WS2812B: Gamma x10 (22 = 2,2; 10 = aus). Videofarben sind gamma-codiert, LEDs linear
   int dither = 0;             // 1 = zeitliches Dithering (feinere Stufen, kann flimmern); 0 = Flacker-Filter
   int wbR = 100, wbG = 100, wbB = 88;
   int mode = 0;               // Bildmodus: 0 Film, 1 Sport, 2 Spiel, 3 Ruhig, 4 Eigene (Regler + eigene Werte)   // Weißabgleich in %: WS2812B-Weiß ist kühler (bläulicher) als ein Fernsehbild
@@ -216,8 +222,9 @@ void loadSettings() {
   { int v = prefs.getInt("maxmA", 10000); cfg.maxCurrent = v < 0 ? 0 : v; }
   cfg.mAPerChannel = constrain(prefs.getInt("mAch", 20), 1, 60);
   cfg.smoothing = constrain(prefs.getInt("smooth", 40), 0, 95);
-  cfg.ble = prefs.getInt("ble", 0) ? 1 : 0;
+  cfg.ble = prefs.getInt("ble", 1) ? 1 : 0;   // 1.6.17: Bluetooth ab Werk an - Farben vom Fernseher immer per Bluetooth, WLAN nur Ersatz
   cfg.dither = prefs.getInt("dith2", 0) ? 1 : 0;   // neuer Schlüssel: ab 1.4 standardmäßig aus (Flacker-Filter statt Dithering)
+  cfg.ledGamma = constrain(prefs.getInt("lgam", 22), 10, 30);
   cfg.wbR = constrain(prefs.getInt("wbR", 100), 0, 100);
   cfg.wbG = constrain(prefs.getInt("wbG", 100), 0, 100);
   cfg.wbB = constrain(prefs.getInt("wbB", 88), 0, 100);
@@ -248,6 +255,7 @@ void saveSettings() {
   prefs.putInt("smooth", cfg.smoothing);
   prefs.putInt("ble", cfg.ble);
   prefs.putInt("dith2", cfg.dither);
+  prefs.putInt("lgam", cfg.ledGamma);
   prefs.putInt("mode", cfg.mode);
   prefs.putInt("wbR", cfg.wbR); prefs.putInt("wbG", cfg.wbG); prefs.putInt("wbB", cfg.wbB);
   prefs.putInt("idle", cfg.idleMode);
@@ -331,7 +339,9 @@ int effSmoothing() { return cfg.mode < 4 ? MODES[cfg.mode].smooth : cfg.smoothin
 // ESP32 kurz Richtung Leerlauf, sobald ein Paket bei langsamer Bildquelle oder schwachem WLAN etwas
 // später kam, und die LEDs "atmeten" bei jedem Bild.
 uint32_t rtAllowMs() {
-  uint32_t grace = (uint32_t)max(1500.0f, 3.0f * (float)frameIntervalMs);
+  // 1.6.14: 8 s statt 1,5 s. Bricht Bluetooth ab, braucht der Fernseher einige Sekunden bis WLAN übernimmt; vorher
+  // blendete der ESP32 dabei zur Leerlauf-Farbe und zurück (alle LEDs blinkten)
+  uint32_t grace = (uint32_t)max(8000.0f, 3.0f * (float)frameIntervalMs);
   return realtimeTimeoutMs + grace;
 }
 
@@ -546,6 +556,7 @@ void noteRealtime(const IPAddress &src, uint8_t timeoutSec, const char *proto) {
   if (lastRealtimeMs == 0) lastRealtimeMs = 1;
   realtimeTimeoutMs = (timeoutSec == 255) ? 0 : (uint32_t)(timeoutSec == 0 ? 2 : timeoutSec) * 1000;
   rtSourceIp = (uint32_t)src;
+  if (rtProtocol != proto) dgSrc++;
   rtProtocol = proto;
   rtFrames++;
 }
@@ -664,6 +675,7 @@ void onDiscovery(AsyncUDPPacket &pkt) {
 
 // ------------------------------------------------------------------ Render-Task (Kern 1)
 static uint8_t frame[MAX_LEDS * 3];
+uint16_t ppiEst16[MAX_LEDS * 3];   // Ausreißer-Filter der Ersatzquelle (gefilterter Wert x16)
 static uint8_t viewWant[MAX_LEDS * 3];   // was der ESP32 gerade anzeigen will (vom TV/Test), für die Live-Ansicht
 
 void renderTask(void *) {
@@ -713,7 +725,8 @@ void renderTask(void *) {
       }
       idleFade = 0;
     } else {
-      idleFade += ((rt ? 0.0f : 1.0f) - idleFade) * (rt ? 0.15f : 0.03f);   // zurück schnell, ausblenden ~1,5 s
+      idleFade += ((rt ? 0.0f : 1.0f) - idleFade) * (rt ? 0.15f : 0.03f);
+      if (idleFade > 0.05f) dgIdle++;   // zurück schnell, ausblenden ~1,5 s
       uint8_t ir = (cfg.idleColor >> 16) & 0xFF, ig = (cfg.idleColor >> 8) & 0xFF, ib = cfg.idleColor & 0xFF;
       if (cfg.idleMode == 0) { ir = ig = ib = 0; }
       else { ir = ir * cfg.idleBrightness / 255; ig = ig * cfg.idleBrightness / 255; ib = ib * cfg.idleBrightness / 255; }
@@ -732,7 +745,10 @@ void renderTask(void *) {
       // Nie kürzer als 1,5 Bildabstände der Quelle: liefert der Fernseher nur wenige Bilder/s (z. B. 5/s bei
       // DRM-Inhalten über die Samsung-Farbmessung oder per Bluetooth), gleitet die Farbe durchgehend von
       // Bild zu Bild statt alle 200 ms zu springen und dann stillzustehen. Mindestens 80 ms gegen Flackern.
-      t50 = max(t50, min(800.0f, max(80.0f, 1.5f * (float)frameIntervalMs)));
+      // 1.6.10: 1 Bildabstand, mindestens 40 ms (vorher 1,5 Bildabstände und mindestens 80 ms: bei der richtigen
+      // Bildaufnahme mit ~24 Bildern/s waren das ~185 ms bis 90 % - spürbar verzögert). Die Ersatzquelle hat
+      // unten ihren eigenen Ausreißer-Filter.
+      t50 = max(t50, min(800.0f, max(40.0f, (float)frameIntervalMs)));
       // Ersatzquelle "ppi": nur 10 Messpunkte am Rand, nacheinander gemessen und auf alle LEDs verteilt. Jeder
       // neue Messwert weicht stark vom vorigen ab -> ohne lange Glättung springen die Farben ständig hin und her.
       portENTER_CRITICAL(&frameMux);
@@ -754,7 +770,21 @@ void renderTask(void *) {
           jump = max(jump, fabsf(m[c] - meanSlow[c]));
           meanSlow[c] += (m[c] - meanSlow[c]) * 0.35f;
         }
-        if (jump > 22.0f) { fastUntil = t0 + 500; cutNow = true; }   // 22: ein einzelner Messpunkt (1/10 der LEDs) muss um >200 springen
+        bool cutHit = jump > 22.0f;
+        if (tvPpi) {
+          // 1.6.14: ein einzelner verrauschter Messpunkt verschiebt den Mittelwert schon über 22 (gemessen: 15-36
+          // "Szenenwechsel" je 10 s, jeder ließ die Rohwerte ungefiltert durch -> Blinken). Echter Wechsel nur, wenn
+          // mehr als die Hälfte der LEDs deutlich vom gefilterten Wert abweicht (Simulation: 5,8 -> 0,8 je 10 s).
+          int far = 0;
+          for (int i = 0; i < n; i++) {
+            int dm = 0;
+            for (int c = 0; c < 3; c++) dm = max(dm, abs((int)want[i * 3 + c] * 16 - (int)ppiEst16[i * 3 + c]));
+            if (dm > 40 * 16) far++;
+          }
+          cutHit = far * 2 > n;
+        }
+        if (cutHit) { fastUntil = t0 + 500; cutNow = true; dgCut++; }
+        dgFrames++;   // 22: ein einzelner Messpunkt (1/10 der LEDs) muss um >200 springen
       }
       bool sceneCut = fastUntil && (int32_t)(fastUntil - t0) > 0;
       // Ausreißer-Filter für die Ersatzquelle (in einer Simulation der ganzen Kette abgestimmt): sie misst auch bei
@@ -763,7 +793,8 @@ void renderTask(void *) {
       //  - kleine Abweichung (<= PPI_G): sanft mitteln (Anteil PPI_A je Bild) -> Standbild ruhig
       //  - große Abweichung einmal: Ausreißer, nur wenig folgen; zweimal in dieselbe Richtung: echt, sofort übernehmen
       //  - Szenenwechsel (Mittelwert aller LEDs springt): alles sofort übernehmen
-      static uint16_t est16[MAX_LEDS * 3];   // gefilterter Wert x16
+      uint16_t *est16 = ppiEst16;            // gefilterter Wert x16
+      static uint16_t pendT[MAX_LEDS * 3];   // seit wann (ms, 16 Bit) der Ausreißer ansteht
       static int8_t pend[MAX_LEDS * 3];      // Richtung des letzten großen Ausreißers
       static uint8_t rawPrev[MAX_LEDS * 3];  // letzter Rohwert: nur GEÄNDERTE Werte sind neue Messungen
       static const int PPI_G = 40;            // abgestimmt in der Simulation mit TV-App 1.6.2 (sendet nach jedem Messpunktpaar)
@@ -780,8 +811,11 @@ void renderTask(void *) {
             else if (abs(d) <= PPI_G * 16) { e += (int)(d * PPI_A); pend[i] = 0; }
             else {
               int8_t sg = d > 0 ? 1 : -1;
-              if (pend[i] == sg) { e = want[i] * 16; pend[i] = 0; }
-              else { pend[i] = sg; e += (int)(sg * PPI_G * 16 * PPI_A); }
+              // 1.6.14: erst übernehmen, wenn die Abweichung länger als ein Messumlauf (~86 ms) ansteht. Die LEDs
+              // zwischen zwei Messpunkten ändern sich auch, wenn nur der NACHBARpunkt neu gemessen wird; ein Ausreißer
+              // galt so schon nach 1 Bild als "zweimal bestätigt" (Simulation: Sprünge/s 1768 -> 43)
+              if (pend[i] == sg) { if ((uint16_t)((uint16_t)t0 - pendT[i]) >= 130) { e = want[i] * 16; pend[i] = 0; dgSnap++; } }
+              else { pend[i] = sg; pendT[i] = (uint16_t)t0; e += (int)(sg * PPI_G * 16 * PPI_A); dgOut++; }
             }
             est16[i] = (uint16_t)constrain(e, 0, 255 * 16);
           }
@@ -791,7 +825,7 @@ void renderTask(void *) {
       } else {
         for (int i = 0; i < n * 3; i++) { est16[i] = want[i] * 16; pend[i] = 0; rawPrev[i] = want[i]; }
       }
-      if (!tvPpi && sceneCut) t50 = min(t50, max(80.0f, 1.0f * (float)frameIntervalMs));
+      if (!tvPpi && sceneCut) t50 = min(t50, max(30.0f, 0.75f * (float)frameIntervalMs));
       glideMsNow = t50;
       float w = 1.678f / (t50 / 1000.0f);
       float dt = constrain((float)(t0 - lastTick), 1.0f, 100.0f) / 1000.0f;
@@ -828,6 +862,25 @@ void renderTask(void *) {
     float *outBuf = wantF;
 
     // ---- Helligkeit + Strombegrenzung (in Kommazahlen, damit dunkle Töne nicht stufig werden) ----
+    // ---- Gamma (nur WS2812B; der RGB-Streifen hat seine eigene in ledShow) ----
+    // Videofarben sind gamma-codiert, die LEDs leuchten linear: ohne diese Kurve mischte sich in kräftige Farben
+    // Weiß (Rot wurde rosa, Pink weißlich). Erst hier am Ausgang, damit Glättung und Filter unverändert bleiben.
+    static float gLut[257];
+    static int gLutFor = -1;
+    if (gLutFor != cfg.ledGamma) {
+      gLutFor = cfg.ledGamma;
+      for (int k = 0; k <= 255; k++) gLut[k] = 255.0f * powf(k / 255.0f, cfg.ledGamma / 10.0f);
+      gLut[256] = gLut[255];
+    }
+    if (!analogOn && cfg.ledGamma != 10) {
+      for (int i = 0; i < n * 3; i++) {
+        float x = outBuf[i];
+        if (x <= 0) { outBuf[i] = 0; continue; }
+        if (x >= 255) { outBuf[i] = 255; continue; }
+        int k = (int)x;
+        outBuf[i] = gLut[k] + (gLut[k + 1] - gLut[k]) * (x - k);
+      }
+    }
     float bscale = cfg.brightness / 255.0f;
     float sumF = 0;
     for (int i = 0; i < n * 3; i++) sumF += outBuf[i] * bscale;
@@ -841,6 +894,7 @@ void renderTask(void *) {
       if (s < 0) s = 0;
       bscale *= s;
       limiting = true;
+      dgLim++;
     }
     // Flacker-Filter (wie HyperHDR "antiFlickeringFilter"): ein Kanal ändert seinen 8-Bit-Wert erst, wenn der
     // genaue Wert um mehr als eine halbe Stufe vom zuletzt ausgegebenen abweicht. Sonst springt eine dunkle LED
@@ -861,6 +915,7 @@ void renderTask(void *) {
         o = (int)(lastOutF[i] + 0.5f);
         ditherAcc[i] = 0;
       }
+      if (abs(o - (int)frame[i]) >= 8) dgBig++;
       frame[i] = (uint8_t)(o > 255 ? 255 : o);
     }
 
@@ -945,7 +1000,7 @@ String sanitizeTokens(const String &in) {
           // Positivliste: nur Einstellungen, die die TV-App kennt und die nichts außer Farben beeinflussen
           static const char *ALLOWED[] = {"map", "rev", "test", "leds", "alpha", "gain", "gamma", "sat", "hdr", "gamut",
                                           "zs", "fps", "ag", "gmin", "gmax", "atau", "ppibars", "psleep", "pz", "peak",
-                                          "black", "afast", "acut", "spatial", "bars", "brows", "bthr", "punch", "floor",
+                                          "black", "afast", "acut", "spatial", "bars", "barhold", "brows", "bthr", "punch", "floor",
                                           "stale", "stalevel", "ui", "uifps", "uithr", "uistale"};
           String k = t.substring(0, eq);
           ok = false;
@@ -994,7 +1049,7 @@ void handleStatus() {
   j += "\"ble\":{\"on\":" + String(cfg.ble ? "true" : "false") + ",\"running\":" + String(bleRunning ? "true" : "false") +
        ",\"connected\":" + String(bleConnected ? "true" : "false") + ",\"writes\":" + String((uint32_t)bleWrites) +
        ",\"bytes\":" + String((uint32_t)bleBytes) + ",\"connects\":" + String((uint32_t)bleConnects) +
-       ",\"mtu\":" + String((unsigned)bleMtu) + ",\"mac\":\"" + String(bleMacStr) + "\",\"built\":" + String(AMBI_BLE ? "true" : "false") + "},";
+       ",\"mtu\":" + String((unsigned)bleMtu) + ",\"discs\":" + String((int)bleDiscs) + ",\"discWhy\":" + String((int)bleDiscReason) + ",\"mac\":\"" + String(bleMacStr) + "\",\"built\":" + String(AMBI_BLE ? "true" : "false") + "},";
   static char tvCopy[1401];
   portENTER_CRITICAL(&tvMux);
   memcpy(tvCopy, tvStatusBuf, sizeof(tvCopy));
@@ -1023,6 +1078,7 @@ void handleGetConfig() {
   j += "\"mAch\":" + String(cfg.mAPerChannel) + ",";
   j += "\"smooth\":" + String(cfg.smoothing) + ",";
   j += "\"dither\":" + String(cfg.dither) + ",";
+  j += "\"lgam\":" + String(cfg.ledGamma) + ",";
   j += "\"ble\":" + String(cfg.ble) + ",";
   j += "\"mode\":" + String(cfg.mode) + ",";
   j += "\"wbR\":" + String(cfg.wbR) + ",\"wbG\":" + String(cfg.wbG) + ",\"wbB\":" + String(cfg.wbB) + ",";
@@ -1079,6 +1135,7 @@ void handleSetConfig() {
   cfg.mAPerChannel = argInt("mAch", cfg.mAPerChannel, 1, 60);
   cfg.smoothing = argInt("smooth", cfg.smoothing, 0, 95);
   cfg.dither = argInt("dither", cfg.dither, 0, 1);
+  cfg.ledGamma = argInt("lgam", cfg.ledGamma, 10, 30);
   if (server.hasArg("ble")) { int b = argInt("ble", cfg.ble, 0, 1); if (b != cfg.ble) { cfg.ble = b; reboot = true; } }
   cfg.mode = argInt("mode", cfg.mode, 0, 4);
   cfg.wbR = argInt("wbR", cfg.wbR, 0, 100); cfg.wbG = argInt("wbG", cfg.wbG, 0, 100); cfg.wbB = argInt("wbB", cfg.wbB, 0, 100);
@@ -1189,10 +1246,12 @@ bool bleInUse() { return true; }
 
 class AmbiBleServerCb : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *s, NimBLEConnInfo &ci) override {
-    bleConnected = true; bleConnects++;
+    bleConnected = true; bleConnects++; bleConnHandle = ci.getConnHandle();
     // kurzes Verbindungsintervall (7,5-15 ms) und lange Pakete (DLE 251 Byte): ein Bild mit 490 LEDs sind
     // 3 Schreibvorgänge à ~500 Byte, das braucht sonst mehrere Intervalle und die Farben kommen ruckelig an
-    s->updateConnParams(ci.getConnHandle(), 6, 12, 0, 300);
+    // Zeitlimit 6 s statt 3 s: WLAN und Bluetooth teilen sich die Antenne, bei schwachem WLAN fehlen dem
+    // Bluetooth sonst zu lange die Sendezeiten und die Verbindung reißt ab
+    s->updateConnParams(ci.getConnHandle(), 6, 12, 0, 600);
     s->setDataLen(ci.getConnHandle(), 251);
     // Größere Pakete selbst aushandeln: der Fernseher fragt zwar nach 517, bleibt aber gemessen bei 23 Byte
     // (20 Byte Nutzlast -> ~90 Schreibvorgänge je Bild, nur 2 Bilder/s). Den MTU-Austausch darf auch der
@@ -1201,7 +1260,10 @@ class AmbiBleServerCb : public NimBLEServerCallbacks {
     if (rc != 0) bleMtuNote = rc;
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo &) override { bleMtu = mtu; }
-  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int) override { bleConnected = false; }   // Werbung startet NimBLE selbst neu
+  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int reason) override {
+    bleConnected = false; bleDiscReason = reason; bleDiscs++;
+    NimBLEDevice::startAdvertising();   // nicht darauf verlassen, dass NimBLE das selbst tut: sonst findet der Fernseher den ESP32 nicht wieder
+  }
 };
 class AmbiBleChrCb : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &) override {
@@ -1570,6 +1632,16 @@ void printStatus() {
         bleRunning ? "an" : "FEHLER beim Start", bleConnected ? "VERBUNDEN" : "nicht verbunden",
         (unsigned)bleWrites, (unsigned)(bleBytes / 1024), (unsigned)bleConnects, (unsigned)bleMtu,
         bleMtuNote ? (" (MTU-Anfrage Fehler " + String(bleMtuNote) + ")").c_str() : "", bleMacStr);
+  LOG("BLINK | %u Bilder vom TV, Szenenwechsel %u, Ausreißer %u, davon übernommen %u | Sprünge>=8 am Ausgang %u | Leerlauf-Takte %u | Strombegrenzung %u | Quellenwechsel %u, jetzt %s",
+      (unsigned)dgFrames, (unsigned)dgCut, (unsigned)dgOut, (unsigned)dgSnap, (unsigned)dgBig, (unsigned)dgIdle, (unsigned)dgLim, (unsigned)dgSrc, (const char *)rtProtocol);
+  dgSrc = dgCut = dgOut = dgSnap = dgBig = dgIdle = dgLim = dgFrames = 0;
+#if AMBI_BLE
+  if (cfg.ble && bleDiscs) LOG("   Bluetooth getrennt: %d mal, zuletzt Grund 0x%X", (int)bleDiscs, (unsigned)bleDiscReason);
+  if (cfg.ble && bleRunning && !bleConnected && !NimBLEDevice::getAdvertising()->isAdvertising()) {
+    LOG("   Bluetooth: Werbung war aus, starte neu");
+    NimBLEDevice::startAdvertising();
+  }
+#endif
   uint32_t lrt = lastRealtimeMs;
   bool rt = lrt != 0 && (realtimeTimeoutMs == 0 || (int32_t)(now - lrt) < (int32_t)rtAllowMs());
   uint32_t tvMs = tvStatusMs;
@@ -1595,7 +1667,7 @@ void printHelp() {
   outRaw("  scan                        WLAN-Netze suchen und auflisten");
   outRaw("  wifi \"Name\" Passwort        Heim-WLAN setzen und neu starten (Anführungszeichen bei Leerzeichen)");
   outRaw("  admin Passwort              Admin-Passwort der Weboberfläche setzen (min. 6 Zeichen)");
-  outRaw("  leds Anzahl                 Anzahl LEDs (1-490)");
+  outRaw("  leds Anzahl                 Anzahl LEDs (1-300)");
   outRaw("  pin GPIO                    Daten-Pin der LEDs (WS2812B)");
   outRaw("  typ rgb | typ ws2812        normaler RGB-Streifen (R,G,B,+) oder WS2812B");
   outRaw("  rgbpins R G B [W]           Pins für den RGB-Streifen, z. B. rgbpins 25 26 27 (W optional, z. B. 33)");
@@ -1892,6 +1964,22 @@ void loop() {
       if (millis() - apSinceMs > 10UL * 60 * 1000 && !bleConnected) { LOG("10 min im Einrichtungsmodus – Neustart, Heim-WLAN neu versuchen"); delay(200); ESP.restart(); }
     }
   }
+#if AMBI_BLE
+  // 1.6.16: halb offene Verbindung erkennen. Bricht der Fernseher seine Seite ab, ohne sauber zu trennen, hält
+  // sich der ESP32 weiter für verbunden, wirbt nicht und der Fernseher findet ihn nie wieder (gemessen: 250 s
+  // "verbunden" ohne ein Paket, LEDs in Leerlauf-Farbe). 4 s ohne Daten -> selbst trennen, Werbung startet neu.
+  {
+    static uint32_t lastW = 0, lastWAt = 0, lastConns = 0;
+    uint32_t now = millis();
+    if (!bleConnected || bleWrites != lastW || bleConnects != lastConns || tvPaused()) { lastW = bleWrites; lastConns = bleConnects; lastWAt = now; }
+    else if (now - lastWAt > 4000) {
+      LOG("Bluetooth: verbunden, aber seit 4 s keine Daten - trenne, damit sich der Fernseher neu verbinden kann");
+      NimBLEServer *srv = NimBLEDevice::getServer();
+      if (srv && bleConnHandle != 0xFFFF) srv->disconnect(bleConnHandle);
+      lastWAt = now;
+    }
+  }
+#endif
   server.handleClient();
   sendBeacon();
   // WLAN weg? Nach 60 s ohne Verbindung neu starten (Einstellungen bleiben erhalten).

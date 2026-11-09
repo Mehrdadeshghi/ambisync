@@ -165,7 +165,9 @@ namespace TizenAmbilight
                     foreach (var chunk in Chunks(frame, frameLen, Math.Max(20, Mtu - 3)))
                     {
                         string werr;
-                        if (!_tx.Write(chunk, out werr)) { ok = false; Err = werr ?? "Schreiben fehlgeschlagen"; break; }
+                        // AmbiSync 1.6.3: "abgelehnt" heißt meist nur, der Sendepuffer ist voll (WLAN und Bluetooth teilen
+                        // sich beim ESP32 die Antenne). Kurz warten und einmal wiederholen, sonst dieses Bild auslassen.
+                        if (!_tx.Write(chunk, out werr)) { Thread.Sleep(8); if (!_tx.Connected || !_tx.Write(chunk, out werr)) { ok = false; Err = werr ?? "Schreiben fehlgeschlagen"; break; } }
                         Writes++;
                     }
                     LastFrameMs = fsw.Elapsed.TotalMilliseconds;
@@ -175,7 +177,8 @@ namespace TizenAmbilight
                         double s = (DateTime.UtcNow - fpsT0).TotalSeconds;
                         if (s >= 2) { Fps = fpsFrames / s; fpsFrames = 0; fpsT0 = DateTime.UtcNow; }
                     }
-                    else if (++failRun >= 5)
+                    // erst trennen, wenn 3 s lang kein Bild durchging (vorher: 5 Fehler in Folge -> 24 Trennungen in 8 min)
+                    else if (++failRun >= 5 && (DateTime.UtcNow - _lastOkUtc).TotalSeconds >= 3)
                     {
                         Fails++;
                         Ambilight.L("bluetooth: Schreiben klappt nicht (" + Err + "), trenne – Farben per WLAN");

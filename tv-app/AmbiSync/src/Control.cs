@@ -126,6 +126,8 @@ namespace TizenAmbilight
                     case "acut":  if (dv >= 0.0 && dv <= 200.0) cfg.AlphaCut = dv; break;
                     case "spatial": if (dv >= 0.0 && dv <= 1.0) cfg.Spatial = dv; break;
                     case "bars":  if (dv == 0 || dv == 1) cfg.Bars = dv != 0; break;
+                    // AmbiSync: Bilder x6, die neue Balken stabil sein müssen (8 = ~2 s, 4 = ~1 s)
+                    case "barhold": if (iv >= 1 && iv <= 90) cfg.BarHold = iv; break;
                     case "brows": if (dv == 0 || dv == 1) cfg.BarRows = dv != 0; break;
                     case "bthr":  if (dv >= 4 && dv <= 80) cfg.BarThresh = (int)Math.Round(dv); break;
                     case "punch": if (dv >= 0.0 && dv <= 1.0) cfg.Punch = dv; break;

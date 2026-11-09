@@ -154,7 +154,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <b>Farben kommen per</b><span id="tLink">–</span>
 </div>
 <div class="hint">Diese Werte schickt die TV-App alle 2 s. Es werden keine Bilder übertragen.</div>
-<div class="btns"><button class="sec" id="bleBtn" onclick="bleToggle()">Bluetooth-Test starten</button></div>
+<div class="btns"><button class="sec" id="bleBtn" onclick="bleToggle()">Bluetooth einschalten</button></div>
 <div class="hint" id="bleHint">Test: der Fernseher schickt die Farben per Bluetooth statt per WLAN. Der ESP32 startet dafür neu. Klappt die Verbindung nicht, nimmt die App automatisch wieder WLAN. Einstellungen und Updates laufen weiter über WLAN.</div>
 <div class="btns"><button class="sec" id="tvPauseBtn" onclick="tvPause()">Update vorbereiten</button></div>
 <div class="hint" id="tvPauseHint">Vor dem Neuinstallieren der TV-App drücken: die App hört auf aufzunehmen, damit die Bildaufnahme des Fernsehers beim Update nicht hängen bleibt. Nach dem Update „Weiter“ drücken (sonst läuft es nach 20 min von selbst weiter).</div>
@@ -184,7 +184,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <label>Welche Farbe der Streifen zeigt</label><select id="rgbMode"><option value="0">vorherrschende Farbe des Bildes (empfohlen)</option><option value="1">Durchschnitt aller Ränder</option></select>
 <div class="hint">Jeder Pin schaltet über einen MOSFET die Minus-Leitung seiner Farbe, der Plus-Anschluss des Streifens bleibt am Netzteil. Der Streifen zeigt die vorherrschende Farbe des Bildes.</div></div>
 <div class="row"><div id="pinBox"><label>Daten-Pin (GPIO)</label><input id="pin" type="number" min="0" max="48"></div>
-<div><label>Anzahl LEDs / Zonen</label><input id="leds" type="number" min="1" max="490"></div></div>
+<div><label>Anzahl LEDs / Zonen</label><input id="leds" type="number" min="1" max="300"></div></div>
 <div id="orderBox"><label>Farbreihenfolge</label><select id="order"><option value="0">GRB (WS2812B, üblich)</option><option value="1">RGB</option><option value="2">BRG</option><option value="3">RBG</option><option value="4">GBR</option><option value="5">BGR</option></select></div>
 <label>Helligkeit <span id="briV"></span></label><input id="bri" type="range" min="0" max="255" oninput="briV.textContent=Math.round(this.value/2.55)+' %'">
 <div class="row"><div><label>Max. Strom (mA, 0 = aus)</label><input id="maxmA" type="number" min="0" step="500"></div>
@@ -196,6 +196,7 @@ pre.log{background:#0a0c10;border:1px solid var(--line);border-radius:8px;paddin
 <label>Weißabgleich des Streifens (%)</label>
 <div class="row" style="grid-template-columns:1fr 1fr 1fr"><div><input id="wbR" type="number" min="0" max="100" title="Rot"></div><div><input id="wbG" type="number" min="0" max="100" title="Grün"></div><div><input id="wbB" type="number" min="0" max="100" title="Blau"></div></div>
 <div class="hint">Rot · Grün · Blau. WS2812B-Weiß ist bläulicher als das Fernsehbild: Blau 85–90 % wirkt natürlich. Wirkt die Wand rosa, Rot etwas senken.</div>
+<label>LED-Gamma ×10 (22 = 2,2 empfohlen, 10 = aus; höher = sattere Farben, dunklere Töne)</label><input id="lgam" type="number" min="10" max="30">
 <label>Dunkle Töne</label><select id="dither"><option value="0">Flacker-Filter (empfohlen)</option><option value="1">Dithering (feinere Stufen, kann flimmern)</option></select>
 <label>Wenn der Fernseher nichts sendet</label><select id="idle"><option value="0">LEDs aus</option><option value="1">feste Farbe</option></select>
 <div class="row"><div><label>Farbe</label><input id="idleCol" type="color"></div>
@@ -253,7 +254,8 @@ async function fetchT(url,opt,ms){const c=new AbortController(),t=setTimeout(()=
  catch(e){NETFAIL++;netShow();throw new Error(e.name==='AbortError'?'ESP32 antwortet nicht (Zeitlimit)':'keine Verbindung zum ESP32')}
  finally{clearTimeout(t)}}
 function netShow(){const e=$('net');if(e)e.textContent=NETFAIL>=2?'⚠ Verbindung zum ESP32 wackelt – versuche weiter …':''}
-async function post(url,data){const r=await fetchT(url,{method:'POST',headers:H,body:new URLSearchParams(data||{})},8000);
+let CFGOK=false;
+async function post(url,data){if(url==='/api/config'&&!CFGOK)throw new Error('Einstellungen noch nicht geladen – Seite neu laden');const r=await fetchT(url,{method:'POST',headers:H,body:new URLSearchParams(data||{})},8000);
  if(r.status==401)throw new Error('Passwort nötig');let j={};try{j=await r.json()}catch(e){}
  if(!r.ok||j.ok===false)throw new Error(j.error||('Fehler '+r.status));return j}
 function dot(c){return '<span class="dot '+c+'"></span>'}
@@ -286,7 +288,7 @@ async function refresh(){clearTimeout(refT);
    {const pp=t.ppi||{};$('tPpi').textContent=String(t.backend||'').startsWith('ppi')?(pp.pz+' Punkte, Umlauf '+pp.ringMs+' ms ('+(pp.ringMs>0?(1000/pp.ringMs).toFixed(1):'?')+'×/s), '+pp.slots+' parallel, '+pp.settle+' ms Wartezeit'):'– (nur bei geschütztem Inhalt)'}
    {const st=String(t.status||'');$('tStat').innerHTML=esc(st)+(/rc=-2\b/.test(st)?'<br><b style="color:var(--warn)">Bildaufnahme im Fernseher hängt. Fernseher 60 s vom Strom trennen (Stecker ziehen) oder Power-Taste 5 s halten, danach die App NICHT antippen.</b>':'')}
   }else ['tBack','tFps','tUi','tCov','tStat','tBt','tPpi','tLink'].forEach(i=>$(i).textContent='–');
-  {const b=s.ble||{};BLEON=!!b.on;$('bleBtn').textContent=BLEON?'Bluetooth-Test beenden (zurück zu WLAN)':'Bluetooth-Test starten';$('bleBtn').style.display=b.built===false?'none':'';
+  {const b=s.ble||{};BLEON=!!b.on;$('bleBtn').textContent=BLEON?'Bluetooth ausschalten (nur WLAN)':'Bluetooth einschalten (empfohlen)';$('bleBtn').style.display=b.built===false?'none':'';
    if(BLEON)$('bleHint').innerHTML='ESP32: '+(b.running?(b.connected?dot('ok')+'Fernseher per Bluetooth verbunden':dot('warn')+'wartet auf den Fernseher')+' · Adresse '+esc(b.mac)+' · '+b.writes+' Pakete':dot('bad')+'Bluetooth konnte nicht starten (Speicher?)')}
  }catch(e){if(NETFAIL>=3){$('hdr').textContent='keine Verbindung';heroSet('bad','Keine Verbindung zum ESP32','Ist er an und im WLAN? Seite neu laden, wenn es länger dauert.')}}
  refT=setTimeout(refresh,document.visibilityState==='visible'?2000:6000)
@@ -309,20 +311,21 @@ function hero(s){const wifi=(!s.ap&&s.rssi<-72)?' · <span style="color:var(--wa
 async function loadCfg(){
  let r;try{r=await fetchT('/api/config',{headers:H},6000)}catch(e){toast(e.message);setTimeout(loadCfg,3000);return}if(!r.ok){toast(r.status==401?'Bitte anmelden':'Fehler '+r.status);return}
  const c=await r.json();
- ['pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
+ ['pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','lgam','idle','idleCol','idleBri','host','allow','type','pinR','pinG','pinB','pinW','rgbMode'].forEach(k=>{if(c[k]!==undefined)$(k).value=c[k]});typeUi();
  $('briV').textContent=Math.round(c.bri/2.55)+' %';modeShow(c.mode);$('smV').textContent=c.smooth+' %';
  $('adminHint').innerHTML=c.hasAdmin?'Passwort ist gesetzt.':'<span style="color:var(--warn)">Kein Passwort gesetzt – jeder im WLAN kann Einstellungen ändern.</span>';
  $('ssid2').value=c.ssid;
  const tv={},extra=[];
  (c.tv||'').split(',').filter(Boolean).forEach(p=>{const i=p.indexOf('=');const k=p.slice(0,i),v=p.slice(i+1);if(TVKEYS.includes(k))tv[k]=v;else extra.push(p)});
  TVKEYS.forEach(k=>$('t_'+k).value=tv[k]??'');$('t_extra').value=extra.join(',');
+ CFGOK=true;   // erst jetzt speichern erlauben: Speichern mit leeren Feldern löschte die TV-Einstellungen
 }
 function typeUi(){const a=$('type').value==='1';$('wizSec').style.display=a?'none':'';$('rgbBox').style.display=a?'':'none';$('pinBox').style.display=a?'none':'';$('orderBox').style.display=a?'none':''}
-function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
+function saveLed(){const d={};['type','pinR','pinG','pinB','pinW','rgbMode','pin','leds','order','bri','maxmA','mAch','smooth','dither','wbR','wbG','wbB','mode','lgam','idle','idleCol','idleBri'].forEach(k=>{const v=$(k).value;if(v!=='')d[k]=v});
  post('/api/config',d).then(()=>toast('Gespeichert')).catch(e=>toast(e.message))}
 function tvParts(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);return parts.join(',')}
 let BLEON=false;
-async function bleToggle(){if(!confirm(BLEON?'Bluetooth-Test beenden? Der ESP32 startet neu.':'Bluetooth-Test starten? Der ESP32 startet neu, danach verbindet sich der Fernseher per Bluetooth.'))return;
+async function bleToggle(){if(!confirm(BLEON?'Bluetooth ausschalten? Der ESP32 startet neu, die Farben kommen dann nur noch per WLAN.':'Bluetooth einschalten? Der ESP32 startet neu, danach verbindet sich der Fernseher per Bluetooth.'))return;
  try{await post('/api/config',{ble:BLEON?0:1});toast('ESP32 startet neu …')}catch(e){toast(e.message)}}
 function saveTvP(){return post('/api/config',{tv:tvParts()})}
 function saveTv(){const parts=[];TVKEYS.forEach(k=>{const v=$('t_'+k).value.trim();if(v!=='')parts.push(k+'='+v)});const ex=$('t_extra').value.trim();if(ex)parts.push(ex);
@@ -438,7 +441,7 @@ function split(Z){const W=16,Hh=9,P=2*W+2*Hh;let l=Math.max(1,Math.round(Z*Hh/P)
  const c=[l,t,r,b];let s=l+t+r+b;while(s<Z){c[3]++;s++}while(s>Z&&c[3]>1){c[3]--;s--}return{L:c[0],T:c[1],R:c[2],B:c[3]}}
 const M={start:'bl',dir:'up'};
 function mPlan(){const [W,H]=tvSize(),den=Number($('mDen').value)||60,inset=Math.max(0,Number($('mIn').value)||0),roll=Number($('mRoll').value)||5;
- const tw=Math.max(10,W-2*inset),th=Math.max(10,H-2*inset);let N=Math.round((2*tw+2*th)/100*den);N=Math.max(8,Math.min(490,N));
+ const tw=Math.max(10,W-2*inset),th=Math.max(10,H-2*inset);let N=Math.round((2*tw+2*th)/100*den);N=Math.max(8,Math.min(300,N));
  const sp=split(N);
  // Reihenfolge der Seiten von HINTEN gesehen. Start unten links (hinten) = unten rechts (vorne).
  const sideName={top:'oben',bottom:'unten',left:'links',right:'rechts'};
