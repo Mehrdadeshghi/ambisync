@@ -479,8 +479,12 @@ namespace TizenAmbilight
         static int _candCount;
         const int ProbeN = 8;
         const double ProbeDepth = 0.25;
-        const int BlackMax10 = 6;
-        const int ProbeIntervalS = 45;   // AmbiSync: eine Balkenprüfung hält die Messung 1-2,5 s an; alle 12 s gab das Sprünge
+        // AmbiSync 1.6.4: nach Hyperion (BlackBorderDetector): schwarz = alle Kanäle unter 5 % (vorher nur exakt 0..6
+        // von 1023 - leicht graue Balken von Streaming-Apps wurden nie erkannt, oben/unten blieb dunkel).
+        const int BlackMax10 = 51;
+        // 1.6.4: Prüfung von außen nach innen mit Abbruch am ersten hellen Punkt (wie Hyperion) kostet ohne Balken nur
+        // ~5 Messungen statt 99 (vorher 1-2,5 s Messpause, darum nur alle 45 s) -> jetzt alle 6 s.
+        const int ProbeIntervalS = 6;
 
         /// <summary>Block top-left per zone for the current active rectangle. Caller holds _lock.</summary>
         static void Place()
@@ -514,53 +518,32 @@ namespace TizenAmbilight
 
         static void ProbeBars()
         {
+            // AmbiSync 1.6.4: nach Hyperion (BlackBorderDetector "default"): ein Maß für oben UND unten (links UND rechts),
+            // von außen nach innen, die Achse endet am ersten hellen Punkt. Oben 3 Punkte (33/50/66 %), unten einer als
+            // Gegenprobe (dunkler Himmel ist kein Balken) - bei x = 12 % statt Hyperions Mitte, sonst schalten Untertitel
+            // im unteren Balken die Erkennung aus. Links 3 Punkte, rechts einer.
             var sw = Stopwatch.StartNew();
             _lastProbeUtc = DateTime.UtcNow;
-            double[] along = { 0.3, 0.5, 0.7 };        // lines crossing the top/bottom probes
-            double[] across = { 0.35, 0.5, 0.65 };     // lines crossing the left/right probes
-            int per = ProbeN * 3;
-            int n = per * 4 + 3;
-            var xs = new double[n]; var ys = new double[n];
-            int q = 0;
-            for (int side = 0; side < 4; side++)
-                for (int k = 0; k < ProbeN; k++)
-                {
-                    double d = (k + 0.5) * ProbeDepth / ProbeN;
-                    for (int l = 0; l < 3; l++)
-                    {
-                        if (side == 0) { xs[q] = along[l]; ys[q] = d; }                 // top
-                        else if (side == 1) { xs[q] = along[l]; ys[q] = 1.0 - d; }       // bottom
-                        else if (side == 2) { xs[q] = d; ys[q] = across[l]; }            // left
-                        else { xs[q] = 1.0 - d; ys[q] = across[l]; }                     // right
-                        q++;
-                    }
-                }
-            xs[q] = 0.5; ys[q] = 0.5; q++;
-            xs[q] = 0.4; ys[q] = 0.4; q++;
-            xs[q] = 0.6; ys[q] = 0.6; q++;
-
-            var mx = new int[n];
-            if (!MeasureMax(xs, ys, n, mx)) { SetProbe(sw.Elapsed.TotalMilliseconds, "aborted", false, false); return; }
-            bool centreLit = mx[n - 1] > BlackMax10 || mx[n - 2] > BlackMax10 || mx[n - 3] > BlackMax10;
-            double ms = sw.Elapsed.TotalMilliseconds;
-            if (!centreLit) { SetProbe(ms, "discarded: centre black", true, true); return; }
-
-            double[] edge = new double[4];
-            for (int side = 0; side < 4; side++)
+            var xs = new double[9]; var ys = new double[9]; var mx = new int[9];
+            xs[0] = 0.5; ys[0] = 0.5; xs[1] = 0.4; ys[1] = 0.4; xs[2] = 0.6; ys[2] = 0.6;
+            if (!MeasureMax(xs, ys, 3, mx)) { SetProbe(sw.Elapsed.TotalMilliseconds, "aborted", false, false); return; }
+            if (mx[0] <= BlackMax10 && mx[1] <= BlackMax10 && mx[2] <= BlackMax10) { SetProbe(sw.Elapsed.TotalMilliseconds, "discarded: centre black", true, true); return; }
+            int firstY = -1, firstX = -1;
+            for (int k = 0; k < ProbeN && (firstY < 0 || firstX < 0); k++)
             {
-                int first = -1;
-                for (int k = 0; k < ProbeN && first < 0; k++)
-                {
-                    bool lit = false;
-                    for (int l = 0; l < 3; l++) if (mx[side * per + k * 3 + l] > BlackMax10) lit = true;
-                    if (lit) first = k;
-                }
-                if (first < 0) { SetProbe(ms, "discarded: a side is black to depth", true, true); return; }
-                if (first < 2) first = 0;                            // < 2 cells (6%) is not believed as a bar
-                edge[side] = first * ProbeDepth / ProbeN;
+                double d = (k + 0.5) * ProbeDepth / ProbeN;
+                int q = 0, y0 = -1, x0 = -1;
+                if (firstY < 0) { y0 = q; xs[q] = 1.0 / 3; ys[q++] = d; xs[q] = 0.5; ys[q++] = d; xs[q] = 2.0 / 3; ys[q++] = d; xs[q] = 0.12; ys[q++] = 1.0 - d; }
+                if (firstX < 0) { x0 = q; xs[q] = d; ys[q++] = 1.0 / 3; xs[q] = d; ys[q++] = 0.5; xs[q] = d; ys[q++] = 2.0 / 3; xs[q] = 1.0 - d; ys[q++] = 0.5; }
+                if (!MeasureMax(xs, ys, q, mx)) { SetProbe(sw.Elapsed.TotalMilliseconds, "aborted", false, false); return; }
+                if (y0 >= 0 && (mx[y0] > BlackMax10 || mx[y0 + 1] > BlackMax10 || mx[y0 + 2] > BlackMax10 || mx[y0 + 3] > BlackMax10)) firstY = k;
+                if (x0 >= 0 && (mx[x0] > BlackMax10 || mx[x0 + 1] > BlackMax10 || mx[x0 + 2] > BlackMax10 || mx[x0 + 3] > BlackMax10)) firstX = k;
             }
-            double nT = edge[0], nB = 1.0 - edge[1], nL = edge[2], nR = 1.0 - edge[3];
-            if (nB - nT < 0.4 || nR - nL < 0.4) { SetProbe(ms, "discarded: active area implausible", true, true); return; }
+            double ms = sw.Elapsed.TotalMilliseconds;
+            if (firstY < 0 || firstX < 0) { SetProbe(ms, "discarded: a side is black to depth", true, true); return; }
+            if (firstY < 2) firstY = 0;                              // < 2 cells (6%) is not believed as a bar
+            if (firstX < 2) firstX = 0;
+            double nT = firstY * ProbeDepth / ProbeN, nB = 1.0 - nT, nL = firstX * ProbeDepth / ProbeN, nR = 1.0 - nL;
             string note = "probe L" + nL.ToString("0.000") + " T" + nT.ToString("0.000") + " R" + nR.ToString("0.000") + " B" + nB.ToString("0.000");
 
             if (Near(nL, ActL) && Near(nT, ActT) && Near(nR, ActR) && Near(nB, ActB)) { SetProbe(ms, note, true, false); _candCount = 0; return; }
@@ -584,6 +567,14 @@ namespace TizenAmbilight
                 // confirm quickly instead of waiting a whole interval
                 _lastProbeUtc = DateTime.UtcNow.AddSeconds(-(ProbeIntervalS - 1));
             }
+        }
+
+        /// <summary>Kurzform für den Status an den ESP32: aktive Bildfläche in Prozent und Anzahl Übernahmen.</summary>
+        public static string BarsShort()
+        {
+            lock (_lock)
+                return "T" + Math.Round(ActT * 100) + " B" + Math.Round(ActB * 100) + " L" + Math.Round(ActL * 100) + " R" + Math.Round(ActR * 100) +
+                       " n" + Adoptions + " p" + Probes + " " + Math.Round(LastProbeMs) + "ms";
         }
 
         /// <summary>Max channel (10-bit) at n normalised points, arm/settle/read like the rolling batches.

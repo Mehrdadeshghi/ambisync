@@ -49,6 +49,7 @@ static volatile uint16_t bleConnHandle = 0xFFFF;
 // Leerlauf-Einblendung, Strombegrenzung, Quellenwechsel Bluetooth/WLAN
 static uint32_t dgCut = 0, dgOut = 0, dgSnap = 0, dgBig = 0, dgIdle = 0, dgLim = 0, dgSrc = 0, dgFrames = 0;   // letzter Trenngrund (NimBLE-Code, 0x208 = Zeitüberschreitung)       // Fehlercode, falls der ESP32 den MTU-Austausch nicht anstoßen konnte
 static volatile uint32_t bleWrites = 0, bleBytes = 0, bleConnects = 0;
+static uint32_t bleLastDataAt = 0;   // millis() des letzten Bluetooth-Pakets (WLAN-Neuverbinden drosseln, 1.6.18)
 static bool bleRunning = false;
 static uint64_t bleMacNum = 0;      // eigene Bluetooth-Adresse als Zahl (geht so durch den Steuerkanal)
 static char bleMacStr[18] = "";
@@ -140,7 +141,7 @@ const char *wlStatusName(int s) {
   }
 }
 
-#define FW_VERSION "1.6.17"
+#define FW_VERSION "1.6.19"
 
 // RMT-Speicher des Kanals (Symbole): mehr Puffer = weniger anfällig, wenn WLAN-Interrupts das Nachfüllen verzögern
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -821,7 +822,10 @@ void renderTask(void *) {
           }
         }
         for (int i = 0; i < n * 3; i++) want[i] = (uint8_t)((est16[i] + 8) >> 4);
-        t50 = 30.0f;   // nur noch zwischen den Bildern des Fernsehers gleiten; das Filtern macht der Ausreißer-Filter
+        // 1.6.19: zwischen den Bildern des Fernsehers über 1,5 Bildabstände gleiten (vorher fest 30 ms: bei 6-29
+        // Bildern/s sprang die Farbe und stand dann still, "0101" statt fließend). Simulation: größter Sprung je
+        // LED-Takt 41 -> 13, Verzögerung +170 ms. Bei Szenenwechsel weiter schnell.
+        t50 = sceneCut ? 40.0f : max(80.0f, min(400.0f, 1.5f * (float)frameIntervalMs));
       } else {
         for (int i = 0; i < n * 3; i++) { est16[i] = want[i] * 16; pend[i] = 0; rawPrev[i] = want[i]; }
       }
@@ -1971,6 +1975,7 @@ void loop() {
   {
     static uint32_t lastW = 0, lastWAt = 0, lastConns = 0;
     uint32_t now = millis();
+    if (bleWrites != lastW) bleLastDataAt = now;
     if (!bleConnected || bleWrites != lastW || bleConnects != lastConns || tvPaused()) { lastW = bleWrites; lastConns = bleConnects; lastWAt = now; }
     else if (now - lastWAt > 4000) {
       LOG("Bluetooth: verbunden, aber seit 4 s keine Daten - trenne, damit sich der Fernseher neu verbinden kann");
@@ -1984,21 +1989,33 @@ void loop() {
   sendBeacon();
   // WLAN weg? Nach 60 s ohne Verbindung neu starten (Einstellungen bleiben erhalten).
   // Zusätzlich selbst neu verbinden: Der Core verbindet nach manchen Fehlern (z. B. Grund 34) nicht zuverlässig neu.
+  // 1.6.18: Solange der Fernseher per Bluetooth Farben liefert, nicht dauernd neu ins WLAN: jeder Versuch (bei
+  // schwachem Signal alle paar Sekunden, mit Suche über alle Kanäle) belegt die gemeinsame Antenne und lässt die
+  // Bluetooth-Pakete stoßweise ankommen (gemessen: bis 0,65 s alte Bilder). Dann nur alle 60 s, direkt am
+  // zuletzt benutzten Zugangspunkt und Kanal (ohne Suche). Ohne Bluetooth-Daten wie bisher alle 10 s.
   static uint32_t lostSince = 0, lastKick = 0;
+  static uint8_t apBssid[6]; static int apChan = 0;
+  bool bleFeeding = bleConnected && millis() - bleLastDataAt < 3000;
+  static bool autoRc = true;
+  if (autoRc == bleFeeding) { autoRc = !bleFeeding; WiFi.setAutoReconnect(autoRc); }
   if (!apMode && WiFi.status() != WL_CONNECTED) {
     uint32_t now = millis();
-    if (!lostSince) { lostSince = now; lastKick = now; LOG("WLAN: Verbindung weg (%s)", wlStatusName(WiFi.status())); }
-    if (now - lastKick > 10000) {
+    if (!lostSince) { lostSince = now; lastKick = now; LOG("WLAN: Verbindung weg (%s)%s", wlStatusName(WiFi.status()), bleFeeding ? " – Bluetooth läuft, neuer Versuch erst in 60 s" : ""); }
+    if (now - lastKick > (bleFeeding ? 60000u : 10000u)) {
       lastKick = now;
       LOG("WLAN: seit %u s weg – verbinde selbst neu mit \"%s\" ...", (unsigned)((now - lostSince) / 1000), cfg.ssid.c_str());
       WiFi.disconnect(false);
       delay(50);
       WiFi.setTxPower(WIFI_POWER_19_5dBm);
-      WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
+      if (bleFeeding && apChan) WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str(), apChan, apBssid);
+      else WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
     }
     // nicht neu starten, solange der Fernseher per Bluetooth verbunden ist (das würde die Farben unterbrechen)
     if (now - lostSince > 120000 && !bleConnected) { LOG("WLAN seit 2 min weg – Neustart"); delay(200); ESP.restart(); }
-  } else if (lostSince) {
+  } else if (WiFi.status() == WL_CONNECTED && (lostSince || !apChan)) {
+    memcpy(apBssid, WiFi.BSSID(), 6); apChan = WiFi.channel();   // Zugangspunkt für schnelles Neuverbinden merken
+  }
+  if (lostSince && WiFi.status() == WL_CONNECTED) {
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
     LOG("WLAN: wieder da nach %u s – IP %s, Signal %d dBm", (unsigned)((millis() - lostSince) / 1000), WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
     lostSince = 0;
